@@ -529,6 +529,8 @@
     <string name="hotspot_network_not_ready">Hotspot network is not ready</string>
     <string name="first_tcp_timeout">The iPhone did not connect to CarPlay in time</string>
     <string name="wireless_startup_retries_exhausted">Automatic retries stopped. Check the connection and retry manually.</string>
+    <string name="wireless_forget_device_title">Wireless connection keeps failing</string>
+    <string name="wireless_forget_device_message">Wireless CarPlay has failed to connect 4 times in a row. On your iPhone, go to Settings → Wi-Fi, forget this head unit\'s hotspot, then pair and connect again.</string>
     <string name="wired_no_tcp_replug_required">Connection failed repeatedly. Unplug the iPhone, plug it back in, then tap Retry.</string>
     <string name="retry_carplay_connection">Retry connection</string>
     <string name="carplay_dock">CarPlay dock</string>
@@ -580,6 +582,7 @@
     <string name="settings_direct_surface_view_description">Uses native SurfaceView hardware overlays directly instead of TextureView, bypassing GPU View composition and significantly reducing GPU/memory load on low-end car headunits (e.g. Android 4.4/6.0, MT3561, T3). Picture adjustments do not apply. Reconnects CarPlay.</string>
     <string name="bluetooth_adapter_unavailable">Head unit has no native Bluetooth adapter; wireless CarPlay unavailable. Please use a wired USB cable.</string>
     <string name="usb_iphone_busy_or_occupied">iPhone USB is busy or occupied by another app (e.g. car iPod player). Close the car iPod app and reconnect the cable.</string>
+    <string name="wired_usb_stall_replug_required">The iPhone is not responding to USB configuration requests (its USB state is stuck). Unplug the cable, restart the iPhone, reconnect it, and then tap Retry.</string>
     <string name="usb_iphone_permission_not_granted">iPhone USB permission was not granted. Check for system permission prompts, exit any car iPod app, and reconnect.</string>
     <string name="bluetooth_device_connected">Connected</string>
     <string name="manual_input_mac">Manual MAC</string>
@@ -629,6 +632,14 @@
     <string name="settings_direct_usbfs_mode_description">For head units whose system USB list never shows the iPhone: enumerates USB devices directly and opens the device node, which may require root. Applies at the next connection and restarts CarPlay.</string>
     <string name="settings_root_hotspot_mode">Root hotspot (hostapd) (experimental)</string>
     <string name="settings_root_hotspot_mode_description">For rooted head units whose hotspot cannot be opened by apps at all. DiPlay runs the system hostapd as root and creates its own hotspot; pick the Root hotspot mode in Connection setup and set its name and password there. Applies at the next connection.</string>
+    <string name="settings_hostapd_apple_vendor_ie">Apple vendor IE on Root hotspot (experimental)</string>
+    <string name="settings_hostapd_apple_vendor_ie_description">Adds the Apple vendor information element to the Root hotspot (hostapd) beacon, so iPhones auto-join it. Without it, iPhones never associate on their own even though a manual tap connects fine. Only affects Root hotspot mode. Applies at the next connection.</string>
+    <string name="settings_carplay_auto_disconnect_bt">Auto-disconnect phone Bluetooth after CarPlay connects (experimental)</string>
+    <string name="settings_carplay_auto_disconnect_bt_description">After wireless CarPlay connects, disconnects the phone Bluetooth link (the head unit Bluetooth is turned off) so the native Bluetooth call screen stops popping up; Bluetooth is turned back on when the session ends. Wireless only, applies at the next connection. If the app exits abnormally, Bluetooth may stay off: turn it back on in system settings.</string>
+    <string name="settings_telephony_downlink_via_music">Route the call downlink through the music stream (experimental)</string>
+    <string name="settings_telephony_downlink_via_music_description">Route the call downlink through the music stream instead of the telephony stream, while call mode and the microphone uplink stay unchanged. Use this only if the call downlink is silent on the telephony stream while media audio works. Applies at the next connection.</string>
+    <string name="settings_announcement_duck_media">Duck media for announcements (experimental)</string>
+    <string name="settings_announcement_duck_media_description">While navigation, assistant or call audio is actually playing, lower the media volume inside DiPlay and restore it about a second after the announcement ends. It only affects sound that DiPlay itself plays, and it never changes the system volume. Applies at the next connection.</string>
     <string name="settings_hostapd_channel">Hotspot channel</string>
     <string name="settings_hostapd_channel_description">2.4 GHz only (channels 1–13). Channel 1 is the most compatible.</string>
     <string name="hotspot_mode_hostapd">Root hotspot (hostapd)</string>
@@ -636,4 +647,10 @@
     <string name="hotspot_hint_hostapd">Root hotspot: this head unit must be rooted. DiPlay creates the hotspot itself; keep your iPhone’s Wi-Fi and Bluetooth on.</string>
     <string name="hostapd_channel_1_13">Channel (1–13)</string>
     <string name="hostapd_channel_must_be_1_13">Channel must be between 1 and 13</string>
+    <string name="settings_ecarx_hotspot_title">ECARX car hotspot</string>
+    <string name="settings_ecarx_hotspot_description">On the next connection or when DiPlay opens, turn off regular Wi-Fi and start the saved car hotspot. Keep its name and password. For boot startup, also enable “Open after the car starts”. No ADB authorization is needed on this Android 5.1 unit.</string>
+    <string name="settings_legacy_hotspot_title">Car hotspot autostart</string>
+    <string name="settings_legacy_hotspot_description">On the next connection or when DiPlay opens, turn off regular Wi-Fi and start the saved car hotspot. Keep its name and password. For boot startup, also enable “Open after the car starts”. No ADB authorization is needed on this unit.</string>
+    <string name="settings_media_focus_exclusive">Exclusive media audio focus</string>
+    <string name="settings_media_focus_exclusive_description">Request permanent focus for media instead of letting other players duck CarPlay. Only helps head units that duck CarPlay to silence; it can mute other players. Takes effect on the next connection.</string>
 </resources>

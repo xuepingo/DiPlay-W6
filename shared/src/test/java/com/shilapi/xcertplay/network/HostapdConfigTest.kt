@@ -124,6 +124,20 @@ class HostapdConfigTest {
         assertNull(HostapdConfig.error("My Car ü 车", "pass word ü 1", 1))
     }
 
+    @Test fun appleVendorIeIsOffByDefault() {
+        val conf = HostapdConfig.renderConf("My Car", "secret-pass", 6)
+        assertFalse(conf.contains("vendor_elements="))
+    }
+
+    @Test fun appleVendorIeAppendsExactlyOneWellFormedElement() {
+        val ie = HostapdConfig.APPLE_VENDOR_IE_2G
+        assertTrue(ie.length % 2 == 0 && ie.all { it in '0'..'9' || it in 'a'..'f' })
+        assertTrue(ie.startsWith("dd08"))
+        val conf = HostapdConfig.renderConf("My Car", "secret-pass", 6, appleVendorIe = true)
+        assertTrue(conf.contains("vendor_elements=$ie\n"))
+        assertEquals(13, conf.lines().filter { it.isNotEmpty() }.size)
+    }
+
     @Test fun everyRenderedLineIsExactlyOneKnownDirective() {
         val conf = HostapdConfig.renderConf("My Car", "secret-pass", 6)
         val directive = Regex(
@@ -181,5 +195,39 @@ class HostapdConfigTest {
         // processes) or "x9" (not a PID).
         assertEquals(listOf("kill -9 101", "kill -9 102", "kill -9 108"), kills)
         assertTrue(output.contains("rm -f ${HostapdConfig.LEASES_PATH} ${HostapdConfig.DNSMASQ_PID_PATH}"))
+    }
+
+    @Test fun countHostapdProcessesCountsOnlyExactProcessesAndOmitsGrep() {
+        val ps = """
+            USER     PID   PPID  VSIZE  RSS     WCHAN    PC         NAME
+            root     101   1     1234   567     c0123456 b6f12345   /system/bin/hostapd
+            wifi     102   1     1234   567     c0123456 b6f12345   hostapd
+            wifi     103   1     1234   567     c0123456 b6f12345   /vendor/bin/hostapd -B /data/misc/wifi/hostapd.conf
+            u0_a55   104   1     1234   567     c0123456 b6f12345   com.example.hostapd
+            shell    105   1     1234   567     c0123456 b6f12345   hostapd_helper
+            root     106   1     1234   567     c0123456 b6f12345   /data/misc/wifi/hostapd.conf
+            root     107   1     1234   567     c0123456 b6f12345   grep hostapd
+        """.trimIndent()
+        assertEquals(3, HostapdConfig.countHostapdProcesses(ps))
+        assertEquals(0, HostapdConfig.countHostapdProcesses(""))
+    }
+
+    @Test fun parseLaunchedPidTakesFirstDigitsOnlyLine() {
+        assertEquals(1234, HostapdConfig.parseLaunchedPid("1234\n"))
+        assertEquals(1234, HostapdConfig.parseLaunchedPid("sh: hostapd: not found\n1234\n"))
+        assertEquals(1234, HostapdConfig.parseLaunchedPid("\n  1234  \n"))
+        assertNull(HostapdConfig.parseLaunchedPid(""))
+        assertNull(HostapdConfig.parseLaunchedPid("sh: hostapd: not found\n"))
+        assertNull(HostapdConfig.parseLaunchedPid("pid=1234\n"))
+    }
+
+    @Test fun psLineForPidAcceptsBothPidColumnsAndRejectsSubstrings() {
+        val toybox = "USER     PID   PPID  NAME\nroot     101   1     /system/bin/hostapd\n"
+        val busybox = "PID   USER  VSZ   STAT  COMMAND\n101   root  1234  S     /system/bin/hostapd\n"
+        assertEquals("root     101   1     /system/bin/hostapd", HostapdConfig.psLineForPid(toybox, 101))
+        assertEquals("101   root  1234  S     /system/bin/hostapd", HostapdConfig.psLineForPid(busybox, 101))
+        assertNull(HostapdConfig.psLineForPid(toybox, 10))
+        assertNull(HostapdConfig.psLineForPid(toybox, 1011))
+        assertNull(HostapdConfig.psLineForPid("", 101))
     }
 }

@@ -21,9 +21,22 @@ object HostapdConfig {
     const val MIN_CHANNEL = 1
     const val MAX_CHANNEL = 13
 
+    /**
+     * Issue #344: Apple vendor IE for the 2.4 GHz beacon, so iPhones auto-join
+     * the AP instead of waiting for a manual tap. The 5 GHz bytes (…0021) are
+     * the ones verified in docs/WIRELESS_HOTSPOT_JOIN.md; this backend is
+     * 2.4 GHz-only (hw_mode=g), and the 2.4 GHz tail byte (…0022) follows the
+     * reporter's LIVI citation — on-device verification still awaited, which
+     * is why this stays behind an experimental toggle.
+     */
+    const val APPLE_VENDOR_IE_2G = "dd0800a0400000020022"
+
     const val CONF_PATH = "/data/misc/wifi/hostapd.conf"
     const val TMP_CONF_PATH = "/data/local/tmp/hostapd_full.conf"
     const val HOSTAPD_LOG_PATH = "/data/local/tmp/hapd.log"
+    // Issue #337: foreground-probe log, kept apart from hapd.log so the
+    // probe never clobbers the daemon-launch evidence it investigates.
+    const val FG_PROBE_LOG_PATH = "/data/local/tmp/hapd-fg.log"
     const val DNSMASQ_LOG_PATH = "/data/local/tmp/dns.log"
     const val LEASES_PATH = "/data/local/tmp/dnsmasq.leases"
     const val DNSMASQ_PID_PATH = "/data/local/tmp/dnsmasq.pid"
@@ -56,7 +69,7 @@ object HostapdConfig {
         value.any { it < ' ' || it == '\u007f' }
 
     /** The hostapd configuration file body for the generated AP. */
-    fun renderConf(ssid: String, passphrase: String, channel: Int): String = buildString {
+    fun renderConf(ssid: String, passphrase: String, channel: Int, appleVendorIe: Boolean = false): String = buildString {
         append("interface=").append(INTERFACE_NAME).append('\n')
         append("driver=nl80211\n")
         append("ssid=").append(ssid).append('\n')
@@ -69,6 +82,9 @@ object HostapdConfig {
         append("wpa_key_mgmt=WPA-PSK\n")
         append("rsn_pairwise=CCMP\n")
         append("max_num_sta=8\n")
+        // Issue #344: without this element iPhones never auto-join the AP
+        // (a manual tap connects fine, which proves the rest of the chain).
+        if (appleVendorIe) append("vendor_elements=").append(APPLE_VENDOR_IE_2G).append('\n')
     }
 
     /** Directories searched for the hostapd/dnsmasq binaries, in order. */
@@ -151,6 +167,45 @@ object HostapdConfig {
 
     /** Removes only the shell-readable staging copy of the configuration. */
     fun removeStagedConfScript(): String = "rm -f $TMP_CONF_PATH"
+
+    /**
+     * Issue #337: the hostapd launch echoes the daemon's pid (`echo $!`), so
+     * a later failure can tell whether THIS hostapd died, was killed, or was
+     * never started — instead of only knowing that no hostapd-shaped process
+     * matched `ps`. Parses the first all-digits line of the launch shell's
+     * merged output; anything else (exec errors, blank lines) is ignored.
+     */
+    fun parseLaunchedPid(launchOutput: String): Int? =
+        launchOutput.lineSequence().map { it.trim() }
+            .firstOrNull { it.isNotEmpty() && it.all { c -> c.isDigit() } }
+            ?.toIntOrNull()
+
+    /**
+     * Issue #337: the `ps` line for one pid, if present. Android
+     * toolbox/toybox `ps` puts the pid in column 2, busybox in column 1 —
+     * accept either, so a missing line means the process is gone, not that
+     * the dialect differs. Field equality (not substring) avoids matching
+     * pid 123 against pid 1234. Returns the trimmed line, or null.
+     */
+    fun psLineForPid(psOutput: String, pid: Int): String? {
+        val want = pid.toString()
+        return psOutput.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }
+            .firstOrNull { line ->
+                val fields = line.split(Regex("\\s+"))
+                fields.getOrNull(0) == want || fields.getOrNull(1) == want
+            }
+    }
+
+    /**
+     * Counts active hostapd processes in `ps` output without depending on `grep`, `wc`, or `tail`.
+     * Minimal ROMs (e.g. Android 4.2 toolbox, issues #308, #337) lack these shell utilities.
+     */
+    fun countHostapdProcesses(psOutput: String): Int =
+        psOutput.lineSequence().count { line ->
+            val words = line.trim().split(Regex("\\s+"))
+            words.any { it == "hostapd" || it.endsWith("/hostapd") } &&
+                !words.any { it.contains("grep") }
+        }
 
     /** One dnsmasq lease line: `<expiry epoch> <mac> <ip> <hostname> <client id>`. */
     data class Lease(val expiryEpochSeconds: Long, val macAddress: String, val ipAddress: String)

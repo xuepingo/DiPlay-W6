@@ -490,6 +490,8 @@
     <string name="hotspot_network_not_ready">热点网络未就绪</string>
     <string name="first_tcp_timeout">等待 iPhone 接入 CarPlay 超时</string>
     <string name="wireless_startup_retries_exhausted">自动重试已停止，请检查连接后手动重试。</string>
+    <string name="wireless_forget_device_title">无线连接连续失败</string>
+    <string name="wireless_forget_device_message">无线 CarPlay 已连续 4 次建链失败。请到 iPhone“设置 → 无线局域网”中找到车机热点，忽略此设备后重新配对连接。</string>
     <string name="wired_no_tcp_replug_required">连接反复失败。请拔下 iPhone 重新插入，然后点击重试。</string>
     <string name="retry_carplay_connection">重新连接</string>
     <string name="carplay_dock">CarPlay 程序栏</string>
@@ -541,6 +543,7 @@
     <string name="settings_direct_surface_view_description">使用系统原生硬件叠加图层（SurfaceView）显示画面，绕过 GPU 视图合成，大幅降低老旧低配车机（如安卓 4.4/6.0、联发科 MT3561、全志 T3）的系统负载与卡顿。开启后画面色彩调节不可用。会重新连接 CarPlay。</string>
     <string name="bluetooth_adapter_unavailable">车机未提供原生蓝牙适配器，无法进行无线连接引导。请在设置中切换为【有线连接】并使用 USB 数据线连接。</string>
     <string name="usb_iphone_busy_or_occupied">iPhone USB 接口被原车系统或其他应用占用（如原车 iPod 播放器），请在车机中退出该应用并重新拔插数据线。</string>
+    <string name="wired_usb_stall_replug_required">iPhone 未响应 USB 配置请求（其 USB 状态已卡死）。请拔下数据线、重启 iPhone 并重新连接，然后点击重试。</string>
     <string name="usb_iphone_permission_not_granted">未能获取 iPhone USB 权限（可能被原车系统拦截或未弹出授权窗口），请尝试退出原车 iPod 播放器并重新插拔 USB。</string>
     <string name="bluetooth_device_connected">已连接</string>
     <string name="manual_input_mac">手动输入 MAC</string>
@@ -593,6 +596,14 @@
     <string name="settings_direct_usbfs_mode_description">适用于系统 USB 列表始终看不到 iPhone 的车机：绕过系统列表直接枚举并打开设备节点，可能需要 root。会在下次连接时生效，并重新连接 CarPlay。</string>
     <string name="settings_root_hotspot_mode">Root 热点（hostapd）（实验性）</string>
     <string name="settings_root_hotspot_mode_description">适用于已 root、且应用完全无法打开热点的车机。DiPlay 以 root 身份运行系统 hostapd 并自行创建热点；在连接设置中选择 Root 热点模式并设置名称与密码。下次连接时生效。</string>
+    <string name="settings_hostapd_apple_vendor_ie">Root 热点 Apple 厂商信息元（实验性）</string>
+    <string name="settings_hostapd_apple_vendor_ie_description">给 Root 热点（hostapd）的信标加上 Apple 厂商信息元，iPhone 才会自动加入。没有它时 iPhone 不会自动关联（手动点选却能连上）。仅影响 Root 热点模式。下次连接时生效。</string>
+    <string name="settings_carplay_auto_disconnect_bt">连上 CarPlay 后自动断开手机蓝牙（实验性）</string>
+    <string name="settings_carplay_auto_disconnect_bt_description">无线 CarPlay 连上后，关闭车机蓝牙，让手机不再弹出原生蓝牙通话界面；会话结束时再把蓝牙打开。仅无线连接生效，下次连接时生效。如果应用异常退出，蓝牙可能保持关闭，需在系统设置里手动重新打开。</string>
+    <string name="settings_telephony_downlink_via_music">通话下行改走音乐流（实验性）</string>
+    <string name="settings_telephony_downlink_via_music_description">通话下行改走音乐流而不是通话流，通话模式和麦克风上行不变。仅当通话流下行无声、而媒体音频有声时使用。下次连接时生效。</string>
+    <string name="settings_announcement_duck_media">播报时压低媒体音量（实验性）</string>
+    <string name="settings_announcement_duck_media_description">导航、语音助手或通话声音实际播放时，在 DiPlay 内压低媒体音量，播报结束后约一秒恢复。仅对 DiPlay 自己播放的声音有效，不改变系统音量。下次连接时生效。</string>
     <string name="settings_hostapd_channel">热点信道</string>
     <string name="settings_hostapd_channel_description">仅 2.4 GHz（信道 1–13），信道 1 兼容性最好。</string>
     <string name="hotspot_mode_hostapd">Root 热点（hostapd）</string>
@@ -600,4 +611,10 @@
     <string name="hotspot_hint_hostapd">Root 热点：车机需要已 root。DiPlay 会自行创建热点；请保持 iPhone 的 Wi-Fi 与蓝牙打开。</string>
     <string name="hostapd_channel_1_13">信道（1–13）</string>
     <string name="hostapd_channel_must_be_1_13">信道须在 1 到 13 之间</string>
+    <string name="settings_ecarx_hotspot_title">ECARX 原厂热点</string>
+    <string name="settings_ecarx_hotspot_description">下次连接或打开 DiPlay 时，关闭普通 Wi-Fi 并开启已保存的原厂热点，保留名称和密码。如需开机自动运行，请同时开启“车机启动后打开”。此 Android 5.1 车机无需 ADB 授权。</string>
+    <string name="settings_legacy_hotspot_title">车机热点自动开启</string>
+    <string name="settings_legacy_hotspot_description">在下次连接或打开 DiPlay 时，自动关闭 Wi-Fi 并开启已保存的车机热点。保持热点名称与密码不变。如需开机自动启动，请同时开启“车机启动后打开”。在此车机上无需 ADB 授权。</string>
+    <string name="settings_media_focus_exclusive">媒体音频焦点独占</string>
+    <string name="settings_media_focus_exclusive_description">媒体改请求永久焦点，不再让其他播放器压低 CarPlay。只对会把 CarPlay 压到无声的车机有效；可能导致其他播放器无声。下次连接生效。</string>
 </resources>

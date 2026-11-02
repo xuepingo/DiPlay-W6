@@ -1,4 +1,4 @@
-﻿import com.android.build.gradle.internal.tasks.L8DexDesugarLibTask
+import com.android.build.gradle.internal.tasks.L8DexDesugarLibTask
 import java.security.KeyStore
 import java.security.MessageDigest
 import org.gradle.api.DefaultTask
@@ -33,8 +33,8 @@ android {
         multiDexEnabled = true
         multiDexKeepProguard = file("multidex-config.pro")
         testInstrumentationRunner = "com.shilapi.xcertplay.T3LegacyInstrumentation"
-        versionCode = 120
-        versionName = "0.3.0"
+        versionCode = 133
+        versionName = "0.3.13"
 
         // Car head units are ARM; the x86/x86_64 copies of the bundled native libraries
         // (Conscrypt, opus, lwIP) only ever shipped for emulators and cost ~4.7 MB.

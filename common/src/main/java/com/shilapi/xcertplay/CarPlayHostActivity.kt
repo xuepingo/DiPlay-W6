@@ -1,6 +1,7 @@
 package com.shilapi.xcertplay
 
 import android.Manifest
+import android.app.AlertDialog
 import android.content.ActivityNotFoundException
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -134,8 +135,41 @@ class CarPlayHostActivity : ComponentActivity() {
     private var reconnectAttempts = 0
     /** Issues #275/#243: consecutive wired no-TCP failures on pre-Lollipop units. */
     private var wiredNoTcpFailures = 0
+    /** Issue #305: consecutive wired USB-busy (EBUSY) failures. */
+    private var wiredUsbBusyFailures = 0
+    /** Issue #359: consecutive wired USB STALL failures. */
+    private var wiredUsbStallFailures = 0
+    // W6 note: upstream's WheelSiriKey/WheelKeyPresses fields are deliberately not carried —
+    // wheel keys never reach Android on W6 (CAN→QNX) and those classes live in the deleted
+    // WheelKeyService.kt.
     private val startupRetryBudget = WirelessStartupRetryBudget()
+    // Issue #290: persistent consecutive wireless link-failure streak, restored
+    // from prefs so it survives process restarts (the budget above does not).
+    private val wirelessLinkFailurePrompt: WirelessLinkFailurePrompt by lazy {
+        WirelessLinkFailurePrompt(
+            AirPlayPersistence.loadWirelessLinkFailures(this),
+            AirPlayPersistence.loadWirelessRepairPromptShown(this),
+        )
+    }
     private var startupRetryStopped = false
+
+    /**
+     * Releases the automatic-retry stop (issues #359/#275/#305): the wired
+     * failure counters restart and the retry button hides. Only deliberate
+     * or physical events call this — the Retry button, a fresh USB attach
+     * (the replug the stop messages ask for), a transport switch, or a
+     * session actually activating. Status reports and waiting states must
+     * never release it implicitly: issue #359 showed the stop being walked
+     * around because restarts reached the stack without ever consulting
+     * the latch.
+     */
+    private fun clearStartupRetryStop() {
+        startupRetryStopped = false
+        wiredNoTcpFailures = 0
+        wiredUsbBusyFailures = 0
+        wiredUsbStallFailures = 0
+        startupRetryButton?.visibility = View.GONE
+    }
     private var startupRetryButton: View? = null
     private var startupFailureGeneration = -1
     private lateinit var airPlayIdentity: AirPlayIdentity
@@ -192,6 +226,8 @@ class CarPlayHostActivity : ComponentActivity() {
         hostapdSsid = hostapdSsid,
         hostapdPassphrase = hostapdPassphrase,
         hostapdChannel = hostapdChannel,
+        hostapdAppleVendorIe = hostapdAppleVendorIe,
+        carplayAutoDisconnectBt = carplayAutoDisconnectBt,
         locationReportingEnabled = locationReportingEnabled,
         directUsbfsMode = AirPlayPersistence.loadDirectUsbfsMode(this),
     )
@@ -237,11 +273,13 @@ class CarPlayHostActivity : ComponentActivity() {
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
             awaitingWirelessPermissions = false
             wirelessPermissionsReady = hasRequiredWirelessPermissions()
+            val connectState = if (ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED) "granted" else "denied"
+            val scanState = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) "n/a" else if (ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED) "granted" else "denied"
             appendLog(
                 if (wirelessPermissionsReady) {
-                    "Wireless startup permissions granted"
+                    "Wireless startup permissions granted (connect=$connectState scan=$scanState)"
                 } else {
-                    "Wireless startup permissions denied"
+                    "Wireless startup permissions denied (connect=$connectState scan=$scanState)"
                 },
             )
             updateHotspotStatusBlock()
@@ -357,23 +395,108 @@ class CarPlayHostActivity : ComponentActivity() {
     /** Issue #315: true between a legacy reverse-enter and its delayed cold start. */
     private var legacyReverseActive = false
 
-    /** Issue #315: delayed cold start after reverse exit; cancelled if reverse re-engages. */
-    private val legacyReverseResumeRunnable = Runnable {
-        if (activeAirPlaySession != null && !isDestroyed && !isFinishing) {
-            sink?.resumeVideoFromReverse(SCREEN_TYPE_MAIN)
-            reapplyVideoLayout()
-            fallbackVideoView?.invalidate()
+    /**
+     * True from any reverse-enter broadcast until the post-exit restore has
+     * run or stood down. Tracked independently of the #315 cold-start
+     * setting: the camera owning the screen is a fact about the display,
+     * not about which recovery strategy is enabled, and the focus-gain
+     * side effects below key off it.
+     */
+    private var reverseCameraActive = false
+    private var reverseCameraActiveSinceMs = 0L
+    private var reverseExitRestoreAttempts = 0
+    private var legacyReverseResumeAttempts = 0
+
+    /** Increments on every focus loss; delayed fullscreen re-asserts capture
+     * it so a loss-gain flap cannot leave flag churn running under an
+     * overlay that has already taken the screen back. */
+    private var windowFocusGeneration = 0L
+
+    /**
+     * Post-exit picture restore. An exit broadcast is a claim, not a proof:
+     * CAN status broadcasts flap (a momentary camera-off state in the
+     * middle of a manoeuvre), and rebuilding the video surface the instant
+     * one arrives lets the returning CarPlay picture displace a reverse
+     * camera that is still up — which then does not come back until the
+     * next gear change, leaving CarPlay on screen for the rest of the
+     * manoeuvre. So the restore waits briefly, runs only while this window
+     * actually holds focus (the camera owns focus while it is up),
+     * re-checks a few times, and is cancelled outright if reverse
+     * re-engages. When it stands down unfocused, the focus-gain refresh
+     * remains as the fallback for the genuine exit.
+     */
+    private val reverseExitRestoreRunnable: Runnable = Runnable {
+        if (isDestroyed || isFinishing || activeAirPlaySession == null) {
+            reverseCameraActive = false
+            return@Runnable
         }
+        if (!hasWindowFocus()) {
+            if (++reverseExitRestoreAttempts <= REVERSE_EXIT_RESTORE_MAX_ATTEMPTS) {
+                mainHandler.postDelayed(reverseExitRestoreRunnable, REVERSE_EXIT_RESTORE_RECHECK_MILLIS)
+            } else {
+                reverseCameraActive = false
+            }
+            return@Runnable
+        }
+        reverseCameraActive = false
+        fallbackVideoView?.visibility = View.VISIBLE
+        sink?.refreshPicture(SCREEN_TYPE_MAIN)
+        reapplyVideoLayout()
+        fallbackVideoView?.invalidate()
+        mainHandler.postDelayed({
+            if (activeAirPlaySession != null && !isDestroyed && !isFinishing && hasWindowFocus()) {
+                sink?.refreshPicture(SCREEN_TYPE_MAIN)
+            }
+        }, 300)
+    }
+
+    /** Issue #315: delayed cold start after reverse exit; cancelled if reverse re-engages. */
+    private val legacyReverseResumeRunnable: Runnable = Runnable {
+        if (activeAirPlaySession == null || isDestroyed || isFinishing) {
+            reverseCameraActive = false
+            return@Runnable
+        }
+        // Same discipline as the post-exit restore: the delayed cold start
+        // must not rebuild the video while the camera still owns the
+        // screen (a flapped exit broadcast schedules it just the same);
+        // re-check briefly, then stand down to the focus-gain fallback.
+        if (!hasWindowFocus()) {
+            if (++legacyReverseResumeAttempts <= LEGACY_REVERSE_RESUME_MAX_ATTEMPTS) {
+                mainHandler.postDelayed(legacyReverseResumeRunnable, LEGACY_REVERSE_RESUME_RECHECK_MILLIS)
+            } else {
+                reverseCameraActive = false
+            }
+            return@Runnable
+        }
+        reverseCameraActive = false
+        fallbackVideoView?.visibility = View.VISIBLE
+        sink?.resumeVideoFromReverse(SCREEN_TYPE_MAIN)
+        reapplyVideoLayout()
+        fallbackVideoView?.invalidate()
     }
 
     private fun handleReverseCameraEnter(source: String) {
+        // A (re-)engagement cancels any post-exit restore or cold start
+        // still waiting to run, whatever recovery strategy is enabled.
+        mainHandler.removeCallbacks(reverseExitRestoreRunnable)
+        mainHandler.removeCallbacks(legacyReverseResumeRunnable)
+        reverseExitRestoreAttempts = 0
+        legacyReverseResumeAttempts = 0
+        if (!reverseCameraActive) {
+            reverseCameraActive = true
+            reverseCameraActiveSinceMs = System.currentTimeMillis()
+            appendLog("Display: reverse camera started by broadcast source=$source")
+        }
         if (!AirPlayPersistence.loadLegacyReverseColdStart(this)) return
         if (activeAirPlaySession == null || isDestroyed || isFinishing) return
-        mainHandler.removeCallbacks(legacyReverseResumeRunnable)
         if (legacyReverseActive) return
         legacyReverseActive = true
         appendLog("Display: reverse camera started by broadcast source=$source; legacy cold start: decoder released")
         sink?.suspendVideoForReverse(SCREEN_TYPE_MAIN)
+        // Issue #315: on legacy chips/head units (e.g. PF8227/MTK 8227L), active SurfaceView hardware overlay
+        // collides with the system reverse camera and dynamic trajectory layer in the GPU/hardware composer.
+        // Hide the SurfaceView overlay during reverse so the car camera gets dedicated layer ownership.
+        fallbackVideoView?.visibility = View.INVISIBLE
     }
 
     private fun handleReverseCameraExit(source: String) {
@@ -381,6 +504,7 @@ class CarPlayHostActivity : ComponentActivity() {
         if (activeAirPlaySession == null || isDestroyed || isFinishing) return
         if (AirPlayPersistence.loadLegacyReverseColdStart(this) && legacyReverseActive) {
             legacyReverseActive = false
+            legacyReverseResumeAttempts = 0
             mainHandler.removeCallbacks(legacyReverseResumeRunnable)
             // Issue #315: on PF8227/MTK 8227L the hardware video channel
             // races the system reverse layer if the decoder comes back
@@ -390,22 +514,25 @@ class CarPlayHostActivity : ComponentActivity() {
             mainHandler.postDelayed(legacyReverseResumeRunnable, LEGACY_REVERSE_COLD_START_DELAY_MILLIS)
             return
         }
-        mainHandler.post {
-            sink?.refreshPicture(SCREEN_TYPE_MAIN)
-            reapplyVideoLayout()
-            fallbackVideoView?.invalidate()
-        }
-        mainHandler.postDelayed({
-            if (activeAirPlaySession != null && !isDestroyed && !isFinishing) {
-                sink?.refreshPicture(SCREEN_TYPE_MAIN)
-            }
-        }, 300)
+        // Not the immediate rebuild this used to be: see the restore
+        // runnable's note. The exit claim is debounced and focus-confirmed
+        // so a flapped broadcast cannot displace a camera that is still up.
+        reverseExitRestoreAttempts = 0
+        mainHandler.removeCallbacks(reverseExitRestoreRunnable)
+        mainHandler.postDelayed(reverseExitRestoreRunnable, REVERSE_EXIT_RESTORE_DELAY_MILLIS)
     }
 
     // The full-window viewport stays independent of the letterboxed SurfaceView dimensions.
     private var videoView: View? = null
     private var fallbackVideoView: SurfaceView? = null
     private var fallbackVideoBounds: CarPlaySurfaceBounds? = null
+    /** Issue #290: size established by the latest grow re-add, with its timestamp. */
+    private var surfaceReaddBounds: CarPlaySurfaceBounds? = null
+    // Issue #363: the view instance the shrink-guard baseline belongs to. A
+    // different instance means a newly created surface, whose first
+    // established size must arm the baseline (see updateVideoLayout).
+    private var surfaceBaselineView: SurfaceView? = null
+    private var surfaceReaddAtMs: Long = 0L
 
     // Smooth video (a setting): SurfaceView output with frames released at the iPhone's frame time.
     private var smoothVideo = false
@@ -549,6 +676,10 @@ class CarPlayHostActivity : ComponentActivity() {
     private var hostapdSsid = "DiPlay"
     private var hostapdPassphrase = ""
     private var hostapdChannel = 1
+    private var hostapdAppleVendorIe = false
+    private var carplayAutoDisconnectBt = false
+    private var telephonyDownlinkViaMusic = false
+    private var announcementDuckMedia = false
     private var awaitingVpnConsent = false
     private var vpnConsentLaunchElapsed = 0L
     private var vpnConsentInstantDenyCount = 0
@@ -906,6 +1037,10 @@ class CarPlayHostActivity : ComponentActivity() {
         hostapdSsid = AirPlayPersistence.loadHostapdSsid(this)
         hostapdPassphrase = AirPlayPersistence.loadHostapdPassphrase(this)
         hostapdChannel = AirPlayPersistence.loadHostapdChannel(this)
+        hostapdAppleVendorIe = AirPlayPersistence.loadHostapdAppleVendorIe(this)
+        carplayAutoDisconnectBt = AirPlayPersistence.loadCarplayAutoDisconnectBt(this)
+        telephonyDownlinkViaMusic = AirPlayPersistence.loadTelephonyDownlinkViaMusic(this)
+        announcementDuckMedia = AirPlayPersistence.loadAnnouncementDuckMedia(this)
     }
 
     private fun requestStartupPrerequisites() {
@@ -1026,10 +1161,12 @@ class CarPlayHostActivity : ComponentActivity() {
         return when {
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU -> buildList {
                 add(Manifest.permission.BLUETOOTH_CONNECT)
+                add(Manifest.permission.BLUETOOTH_SCAN)
                 if (needsWifiRuntimePermission) add(Manifest.permission.NEARBY_WIFI_DEVICES)
             }
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> buildList {
                 add(Manifest.permission.BLUETOOTH_CONNECT)
+                add(Manifest.permission.BLUETOOTH_SCAN)
                 if (needsWifiRuntimePermission) {
                     add(Manifest.permission.ACCESS_COARSE_LOCATION)
                     add(Manifest.permission.ACCESS_FINE_LOCATION)
@@ -1047,6 +1184,9 @@ class CarPlayHostActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         if (isIphoneUsbAttachment(intent)) {
+            // A fresh attach is the physical replug the stop messages ask
+            // for (issue #359): the stopped episode is over.
+            clearStartupRetryStop()
             if (wirelessEnabled) {
                 if (menuOpen) cancelSettingsEdits()
                 AirPlayPersistence.saveWirelessEnabled(this, false)
@@ -1082,6 +1222,9 @@ class CarPlayHostActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         UsbBtPairingUiRouter.register(this)
+        if (CarPlayBackgroundSession.hasSession()) {
+            appendLog("Activity resumed while CarPlay controller is retained")
+        }
         DiPlayBootstrap.restoreUsbBluetooth(this)
         oemLabel = AirPlayPersistence.loadOemLabel(this)
         val savedNightMode = AirPlayPersistence.loadCarPlayNightMode(this)
@@ -1141,6 +1284,7 @@ class CarPlayHostActivity : ComponentActivity() {
                     }
                 }
                 if (controller != null) {
+                    clearStartupRetryStop()
                     restartCarPlay("switching to ${if (wirelessEnabled) "wireless" else "USB"}")
                 }
                 requestStartupPrerequisites()
@@ -1230,25 +1374,39 @@ class CarPlayHostActivity : ComponentActivity() {
             gestureTracking = false
             touchOutsideContent = false
             refreshConfiguration(source = ThemeModeDiagnostics.Source.WINDOW_FOCUS)
-            applyFullscreenMode()
+            // While a reverse camera is believed up, a focus gain is a flap
+            // in its arrival, not its departure: applying fullscreen flags
+            // and rebuilding the picture here disturbs the camera's tenure
+            // and can displace it for the rest of the manoeuvre. The
+            // post-exit restore runs the same work once the exit is real.
+            // The age cap keeps a never-cleared flag (a missed exit
+            // broadcast) from gating refreshes forever.
+            val reverseGateAgeMs = System.currentTimeMillis() - reverseCameraActiveSinceMs
+            if (reverseCameraActive && reverseGateAgeMs < REVERSE_ACTIVE_GATE_CAP_MILLIS) {
+                appendLog("Display: focus gained while reverse camera is active; fullscreen and picture refresh deferred to reverse exit")
+            } else {
+                applyFullscreenMode()
+                scheduleHarmanFullscreenReassert()
 
-            // Issues #251/#252: a reverse-camera overlay usually takes window focus
-            // without pausing the activity, so onResume's picture refresh never runs
-            // when it closes — the (still decoding) picture stayed black for seconds
-            // until the stream happened to refresh itself. Refresh on focus regain.
-            // Issue #290: the same cycle can leave the fitted video bounds at the
-            // shrunken camera size; focus regain is when the window size is final,
-            // so recompute the fit there too.
-            if (activeAirPlaySession != null) {
-                sink?.refreshPicture(SCREEN_TYPE_MAIN)
-                reapplyVideoLayout()
-                mainHandler.postDelayed({
-                    if (activeAirPlaySession != null && !isDestroyed && !isFinishing) {
-                        sink?.refreshPicture(SCREEN_TYPE_MAIN)
-                    }
-                }, 300)
+                // Issues #251/#252: a reverse-camera overlay usually takes window focus
+                // without pausing the activity, so onResume's picture refresh never runs
+                // when it closes — the (still decoding) picture stayed black for seconds
+                // until the stream happened to refresh itself. Refresh on focus regain.
+                // Issue #290: the same cycle can leave the fitted video bounds at the
+                // shrunken camera size; focus regain is when the window size is final,
+                // so recompute the fit there too.
+                if (activeAirPlaySession != null) {
+                    sink?.refreshPicture(SCREEN_TYPE_MAIN)
+                    reapplyVideoLayout()
+                    mainHandler.postDelayed({
+                        if (activeAirPlaySession != null && !isDestroyed && !isFinishing && hasWindowFocus()) {
+                            sink?.refreshPicture(SCREEN_TYPE_MAIN)
+                        }
+                    }, 300)
+                }
             }
         } else {
+            windowFocusGeneration++
             mainHandler.removeCallbacks(hideDockRunnable)
             dockEdgeSwipeActive = false
             dockCloseSwipeActive = false
@@ -1277,6 +1435,9 @@ class CarPlayHostActivity : ComponentActivity() {
         closePicturePanel()
         // The controller, USB/iAP2 link, and VPN attachment intentionally outlive the UI.
         isActivityStarted = false
+        if (CarPlayBackgroundSession.hasSession()) {
+            appendLog("Activity stopped while CarPlay controller remains retained")
+        }
         logThemeState(ThemeModeDiagnostics.Source.STOP, resources.configuration)
         mainHandler.removeCallbacks(pollConfiguration)
         super.onStop()
@@ -1374,6 +1535,7 @@ class CarPlayHostActivity : ComponentActivity() {
         currentSurfaceTexture = null
         fallbackVideoView = null
         fallbackVideoBounds = null
+        surfaceBaselineView = null
         sessionLog?.append("Activity destroyed")
         sessionLog?.close()
         if (crashDiagnosticLog === sessionLog) crashDiagnosticLog = null
@@ -1468,10 +1630,8 @@ class CarPlayHostActivity : ComponentActivity() {
                 if (!CarPlayBackgroundSession.isOwner(this@CarPlayHostActivity) ||
                     shuttingDown.get() || menuOpen || handshakeResetInProgress) return@setOnClickListener
                 startupRetryBudget.manualRetry()
-                startupRetryStopped = false
                 reconnectAttempts = 0
-                wiredNoTcpFailures = 0
-                visibility = View.GONE
+                clearStartupRetryStop()
                 restartCarPlay(getString(R.string.connecting_to_your_iphone))
             }
             startupRetryButton = this
@@ -4130,8 +4290,11 @@ class CarPlayHostActivity : ComponentActivity() {
             videoHeight = videoHeight,
             preferSoftwareHevcDecoder = hevcSoftwareDecoderEnabled,
             advancedAudioChannelMapping = advancedAudioChannelMapping,
+            telephonyDownlinkViaMusic = telephonyDownlinkViaMusic,
+            announcementDuck = announcementDuckMedia,
             audioFocusEnabled = AirPlayPersistence.loadAudioFocusEnabled(this),
             audioFocusAutoYield = AirPlayPersistence.loadAudioFocusAutoYield(this),
+            mediaFocusExclusive = AirPlayPersistence.loadMediaFocusExclusive(this),
             mediaChannel = AirPlayPersistence.loadMediaAudioChannel(this),
             navigationChannel = AirPlayPersistence.loadNavigationAudioChannel(this),
             mediaVolumePercent = AirPlayPersistence.loadMediaVolumePercent(this),
@@ -4177,7 +4340,7 @@ class CarPlayHostActivity : ComponentActivity() {
                     activeAirPlaySession = session
                     CarPlayBackgroundSession.active = true
                     reconnectAttempts = 0
-                    wiredNoTcpFailures = 0
+                    clearStartupRetryStop()
                     logThemeState(ThemeModeDiagnostics.Source.SESSION_ACTIVE, resources.configuration)
                     syncAirPlayDarkMode(ThemeModeDiagnostics.Source.SESSION_ACTIVE)
                     if (menuOpen) return@runOnUiThread
@@ -4193,6 +4356,14 @@ class CarPlayHostActivity : ComponentActivity() {
                         updateDebugOverlays()
                     }
                     if (!startupRetryBudget.firstFrame(session, android.os.SystemClock.elapsedRealtime())) return@runOnUiThread
+                    // Issue #290: a session showing its first frame breaks
+                    // the failure streak — the phone did connect in between,
+                    // so any later failures start a new streak and the prompt
+                    // can show again. (A mid-session loss is not itself a
+                    // counted failure; only FIRST_TCP_TIMEOUT counts.)
+                    wirelessLinkFailurePrompt.onSessionActivated()
+                    AirPlayPersistence.saveWirelessLinkFailures(this@CarPlayHostActivity, 0)
+                    AirPlayPersistence.saveWirelessRepairPromptShown(this@CarPlayHostActivity, false)
                     mainHandler.postDelayed({
                         if (controllerGeneration == restartGeneration && activeAirPlaySession === session &&
                             !shuttingDown.get() && CarPlayBackgroundSession.isOwner(this@CarPlayHostActivity) &&
@@ -4305,7 +4476,11 @@ class CarPlayHostActivity : ComponentActivity() {
         when (status) {
             // The phone is gone (or was replugged): a fresh attach episode starts,
             // so the legacy wired no-TCP budget starts over (issues #275/#243).
-            is CarPlayStatus.WaitingForIphone -> wiredNoTcpFailures = 0
+            is CarPlayStatus.WaitingForIphone -> {
+                wiredNoTcpFailures = 0
+                wiredUsbBusyFailures = 0
+                wiredUsbStallFailures = 0
+            }
             is CarPlayStatus.Failed -> if (status.wifiResetRequired) {
                 wifiRecoveryButton?.visibility = View.VISIBLE
             } else {
@@ -4500,6 +4675,10 @@ class CarPlayHostActivity : ComponentActivity() {
             },
         )
         controller = next
+        // Issues #327/#350: on a video-only recovery attempt, re-ask the phone
+        // for the screen (changeModes Take Screen); wireless sessions no-op
+        // inside takeMainAudioAndScreen by design.
+        media.videoRecoveryAction = { next.takeMainAudioAndScreen() }
         resetSidePanel() // a new session starts without the side panel
         updateClusterMapShown()
         CarPlayMediaKeys.attach(this, next)
@@ -4594,17 +4773,18 @@ class CarPlayHostActivity : ComponentActivity() {
             appendLog("THEME_DIAGNOSTIC request source=${source.label} applied=${if (night) "dark" else "light"} sessionActive=false")
             return
         }
-        airPlayCommandExecutor.execute {
-            try {
-                val sent = session.setNightMode(night)
-                // A successful write does not prove the iPhone changed its appearance.
-                appendLog(
-                    "THEME_DIAGNOSTIC send source=${source.label} applied=${if (night) "dark" else "light"} commandWritten=$sent",
-                )
-                Log.i(
-                    TAG,
-                    "AirPlay dark mode=${if (night) "dark" else "light"} eventChannelReady=$sent",
-                )
+        try {
+            airPlayCommandExecutor.execute {
+                try {
+                    val sent = session.setNightMode(night)
+                    // A successful write does not prove the iPhone changed its appearance.
+                    appendLog(
+                        "THEME_DIAGNOSTIC send source=${source.label} applied=${if (night) "dark" else "light"} commandWritten=$sent",
+                    )
+                    Log.i(
+                        TAG,
+                        "AirPlay dark mode=${if (night) "dark" else "light"} eventChannelReady=$sent",
+                    )
             } catch (error: Throwable) {
                 val failureClass = error.javaClass.simpleName.take(64)
                     .filter { it.isLetterOrDigit() || it == '_' || it == '$' }
@@ -4612,6 +4792,14 @@ class CarPlayHostActivity : ComponentActivity() {
                 appendLog("THEME_DIAGNOSTIC send source=${source.label} failureClass=$failureClass")
                 Log.w(TAG, "Could not send AirPlay dark mode update", error)
             }
+        }
+        } catch (error: java.util.concurrent.RejectedExecutionException) {
+            // Issue #310: the executor is shut down in teardown while a
+            // resume can still race it, and execute() itself throws outside
+            // the runnable's own try. Dropping this best-effort send is
+            // correct — it must never crash resume.
+            appendLog("THEME_DIAGNOSTIC send source=${source.label} failureClass=RejectedExecutionException")
+            Log.w(TAG, "Could not send AirPlay dark mode update: executor shut down", error)
         }
     }
 
@@ -4793,6 +4981,20 @@ class CarPlayHostActivity : ComponentActivity() {
         return base
     }
 
+    /**
+     * Issue #290: true while [bounds] is a transitional shrink below the size the
+     * surface was established at (initial creation, #363, or the latest grow
+     * re-add), inside the same settle window the
+     * reapply listener uses (3 s). A genuine later shrink (a new reverse entry)
+     * either exceeds the re-added size or arrives after the window and applies
+     * normally.
+     */
+    private fun isTransitionalShrinkAfterReadd(bounds: CarPlaySurfaceBounds): Boolean {
+        val readd = surfaceReaddBounds ?: return false
+        if (bounds.width >= readd.width || bounds.height >= readd.height) return false
+        return SystemClock.elapsedRealtime() - surfaceReaddAtMs < 3_000L
+    }
+
     private fun updateVideoLayout(viewWidth: Int, viewHeight: Int) {
         val view = videoView ?: return
         if (viewWidth <= 0 || viewHeight <= 0) return
@@ -4800,9 +5002,45 @@ class CarPlayHostActivity : ComponentActivity() {
         val fallback = fallbackVideoView
         if (fallback != null) {
             val bounds = CarPlaySurfaceBounds.from(content)
-            if (fallbackVideoBounds != bounds) {
+            if (fallback !== surfaceBaselineView && bounds.width > 0 && bounds.height > 0) {
+                // Issue #363: arm the shrink-guard baseline from CREATION,
+                // not from a size change. The 0.3.9 arming sat inside the
+                // bounds-changed branch below; when a recreated surface's
+                // first size equalled the previous surface's last bounds
+                // (both 1024x600), that branch never ran, no baseline was
+                // recorded, and the settle shrink 0.7 s later applied
+                // unguarded. Keying on the view instance cannot miss:
+                // every new surface arms at the first size it establishes.
+                surfaceBaselineView = fallback
+                surfaceReaddBounds = bounds
+                surfaceReaddAtMs = SystemClock.elapsedRealtime()
+            }
+            // Issue #290 (0.3.5 retest): right after the grow re-add below recreates
+            // the Surface at the restored size, the video view passes through a
+            // transitional smaller size; fitting to it would setFixedSize the new
+            // Surface back down and the settle listener would keep re-asserting
+            // the small size, so the loop ended small instead of converging.
+            val transitionalShrink = fallbackVideoBounds != bounds && isTransitionalShrinkAfterReadd(bounds)
+            if (transitionalShrink) {
+                appendLog(
+                    "Display: ignored transitional shrink to ${bounds.width}x${bounds.height} " +
+                        "after surface re-add; keeping ${surfaceReaddBounds?.width}x${surfaceReaddBounds?.height}",
+                )
+            }
+            if (fallbackVideoBounds != bounds && !transitionalShrink) {
                 val previousBounds = fallbackVideoBounds
                 fallbackVideoBounds = bounds
+                if (previousBounds == null && bounds.width > 0 && bounds.height > 0) {
+                    // Issue #363: the transitional-shrink guard below was only
+                    // armed by the grow re-add, so a surface created directly
+                    // at its full size (Activity resume) had no baseline: the
+                    // settle shrink ~1 s later applied and latched, leaving
+                    // black borders. Arm the same baseline at first
+                    // establishment; a genuine shrink after the window still
+                    // applies normally.
+                    surfaceReaddBounds = bounds
+                    surfaceReaddAtMs = SystemClock.elapsedRealtime()
+                }
                 fallback.layoutParams = FrameLayout.LayoutParams(bounds.width, bounds.height,
                     Gravity.TOP or Gravity.LEFT).apply {
                     leftMargin = bounds.left
@@ -4810,9 +5048,74 @@ class CarPlayHostActivity : ComponentActivity() {
                 }
                 if (bounds.width > 0 && bounds.height > 0) {
                     fallback.holder.setFixedSize(bounds.width, bounds.height)
+                    // Issue #290: the reapply log alone could not prove whether
+                    // this branch ran, so a retest could not tell a skipped
+                    // resize from a resize the Surface ignored. Trace it.
+                    appendLog(
+                        "Display: fallback surface fixed size " +
+                            "${bounds.width}x${bounds.height} (was " +
+                            "${previousBounds?.width}x${previousBounds?.height})",
+                    )
                 }
                 fallback.requestLayout()
                 fallback.invalidate()
+                if (previousBounds != null && bounds.height > previousBounds.height) {
+                    surfaceReaddBounds = bounds
+                    surfaceReaddAtMs = SystemClock.elapsedRealtime()
+                    // Issue #290: on some firmwares a live Surface ignores
+                    // setFixedSize — the size is latched at creation. A
+                    // reverse window is shorter than full screen, so on the
+                    // return trip the window grows back taller but the
+                    // surface stays at the reverse size, leaving borders on
+                    // all four sides until something rebuilds it (re-entering
+                    // from the desktop recreates the surface, which is why
+                    // that workaround clears the borders). Force one
+                    // recreation here: remove the view and re-add it so
+                    // a new surface is created at the fixed size requested
+                    // above. Height growth is the reverse-return signature;
+                    // width-only growth (dock reveal) is left untouched.
+                    // Issue #290 (0.3.4 retest): hiding and re-showing the
+                    // same view did NOT recreate its Surface on this
+                    // firmware — the picture stayed at the reverse size
+                    // even though the recreate log fired. Removing the
+                    // view from its parent and re-adding it forces
+                    // surfaceDestroyed / surfaceCreated, the same
+                    // lifecycle desktop re-entry already survives.
+                    val parent = fallback.parent as? ViewGroup
+                    if (parent != null) {
+                        // Issue #290 (0.3.5/0.3.6 startup crash): removing and
+                        // re-adding the view synchronously inside this layout
+                        // pass crashes on Android 5.1.1 — the following layout
+                        // dereferences the SurfaceView's not-yet-ready window
+                        // (startup size oscillation 600->500->600, 6 of 6
+                        // crashes). Post it to after the current traversal
+                        // and re-validate the view state there.
+                        fallback.post {
+                            if (isDestroyed || fallbackVideoView !== fallback) return@post
+                            val currentParent = fallback.parent as? ViewGroup ?: return@post
+                            val index = currentParent.indexOfChild(fallback)
+                            if (index < 0) return@post
+                            currentParent.removeView(fallback)
+                            currentParent.addView(fallback, index, fallback.layoutParams)
+                            appendLog(
+                                "Display: fallback surface re-add after grow to " +
+                                    "${bounds.width}x${bounds.height} (was " +
+                                    "${previousBounds.width}x${previousBounds.height})",
+                            )
+                            sink?.refreshPicture(SCREEN_TYPE_MAIN)
+                        }
+                    } else {
+                        fallback.visibility = View.GONE
+                        fallback.post {
+                            if (fallbackVideoView === fallback) fallback.visibility = View.VISIBLE
+                        }
+                        appendLog(
+                            "Display: fallback surface re-add after grow to " +
+                                "${bounds.width}x${bounds.height} (was " +
+                                "${previousBounds.width}x${previousBounds.height})",
+                        )
+                    }
+                }
                 if (previousBounds != null && (bounds.width > previousBounds.width || bounds.height > previousBounds.height)) {
                     sink?.refreshPicture(SCREEN_TYPE_MAIN)
                 }
@@ -4855,9 +5158,12 @@ class CarPlayHostActivity : ComponentActivity() {
      * Issue #290: some ROMs settle the video view's size over several layout
      * passes after a camera cycle, so even the posted recompute can run against
      * a mid-transition size and nothing re-triggers it afterwards. Recompute
-     * once more when the view's size actually changes shortly after, then
-     * disarm; the delayed disarm keeps a later unrelated resize from being
-     * mistaken for this cycle's settle.
+     * on every size change inside the settle window, then disarm; the delayed
+     * disarm keeps a later unrelated resize from being mistaken for this
+     * cycle's settle. (An earlier one-shot version removed the listener on
+     * the first change, so an intermediate size consumed it and the final
+     * size never recomputed — the stuck small canvas behind the reverse
+     * black border and the first-entry bottom bar.)
      */
     private fun armSettledVideoReapply(view: View) {
         val listener = object : View.OnLayoutChangeListener {
@@ -4866,7 +5172,6 @@ class CarPlayHostActivity : ComponentActivity() {
                 oldLeft: Int, oldTop: Int, oldRight: Int, oldBottom: Int,
             ) {
                 if ((right - left) == (oldRight - oldLeft) && (bottom - top) == (oldBottom - oldTop)) return
-                changedView.removeOnLayoutChangeListener(this)
                 if (isDestroyed || videoView !== changedView) return
                 updateVideoLayout(changedView.width, changedView.height)
                 val content = contentRect(changedView.width, changedView.height)
@@ -4936,6 +5241,7 @@ class CarPlayHostActivity : ComponentActivity() {
             shuttingDown.get() ||
             menuOpen ||
             handshakeResetInProgress ||
+            startupRetryStopped ||
             pendingDisplaySize != null ||
             controller != null
         ) {
@@ -4961,6 +5267,22 @@ class CarPlayHostActivity : ComponentActivity() {
                 lower.contains("device or resource busy") ||
                 lower.contains("no such device")) &&
             lower.contains("reboot")
+    }
+
+    // Issue #290: visible prompt after 4 consecutive wireless link failures.
+    // Dismissing it does not reset the streak (the shown flag persists), so
+    // it never nags twice for the same streak; only a session showing video
+    // resets.
+    private fun showWirelessRepairPrompt() {
+        runOnUiThread {
+            if (isFinishing || isDestroyed) return@runOnUiThread
+            appendLog("wireless link failures reached prompt threshold; showing forget-and-repair prompt")
+            AlertDialog.Builder(this)
+                .setTitle(R.string.wireless_forget_device_title)
+                .setMessage(R.string.wireless_forget_device_message)
+                .setPositiveButton(android.R.string.ok, null)
+                .show()
+        }
     }
 
     private fun reconnectAfterLoss(reason: String, startupFailure: WirelessStartupFailure? = null) {
@@ -4997,6 +5319,53 @@ class CarPlayHostActivity : ComponentActivity() {
                 setConnectionStage(getString(R.string.wired_no_tcp_replug_required))
                 return
             }
+        }
+        // Issue #305: a USB-busy (EBUSY) failure repeats identically while the
+        // previous round's interface claim lingers — the outer retry loop
+        // would otherwise hammer it forever with a growing backoff. Mirror
+        // the wired-no-TCP stop: after a few consecutive busy failures, stop
+        // the automatic loop and ask for a physical replug instead. The VPN
+        // guard above already claimed "Device or resource busy" reasons, so
+        // matching "usbfs" here only catches the USB-select path.
+        if (!wirelessEnabled && reason.contains("usbfs", ignoreCase = true)) {
+            wiredUsbBusyFailures += 1
+            if (wiredUsbBusyFailures >= WIRED_USB_BUSY_FAILURE_LIMIT) {
+                appendLog("wired USB busy failures=$wiredUsbBusyFailures; automatic retry stopped, manual replug required generation=$restartGeneration")
+                startupRetryStopped = true
+                startupRetryButton?.visibility = View.VISIBLE
+                setConnectionStage(getString(R.string.usb_iphone_busy_or_occupied))
+                return
+            }
+        }
+        // Issue #359: after an ENODEV drop the iPhone's USB state can wedge so
+        // that every configuration request stalls outright; the outer loop then
+        // repeats the identical failure forever (200+ STALLs in the reporter's
+        // log, backoff already at its cap). Mirror the busy stop: after a few
+        // consecutive all-stalled failures, stop the automatic loop and ask
+        // for the phone-side reset that unwedges it (unplug + restart the
+        // iPhone). The STALL hint only appears when every attempt of a
+        // configuration request stalled, which is exactly the wedged state.
+        if (!wirelessEnabled && reason.contains("USB STALL", ignoreCase = true)) {
+            wiredUsbStallFailures += 1
+            if (wiredUsbStallFailures >= WIRED_USB_STALL_FAILURE_LIMIT) {
+                appendLog("wired USB stall failures=$wiredUsbStallFailures; automatic retry stopped, iPhone restart required generation=$restartGeneration")
+                startupRetryStopped = true
+                startupRetryButton?.visibility = View.VISIBLE
+                setConnectionStage(getString(R.string.wired_usb_stall_replug_required))
+                return
+            }
+        }
+        // Issue #290: count only genuine link-establishment failures (the
+        // iPhone never opens AirPlay TCP). Hotspot-not-ready and
+        // hotspot-configuration failures are car-side problems that
+        // forgetting the device on the iPhone would not fix, so they do not
+        // count. At the threshold the driver gets a visible prompt to forget
+        // the device on the iPhone and re-pair.
+        if (startupFailure == WirelessStartupFailure.FIRST_TCP_TIMEOUT) {
+            val showPrompt = wirelessLinkFailurePrompt.onFailure()
+            AirPlayPersistence.saveWirelessLinkFailures(this, wirelessLinkFailurePrompt.consecutiveFailures)
+            AirPlayPersistence.saveWirelessRepairPromptShown(this, wirelessLinkFailurePrompt.promptShown)
+            if (showPrompt) showWirelessRepairPrompt()
         }
         val startupDelay = if (startupFailure != null && startupFailure != WirelessStartupFailure.HOTSPOT_CONFIGURATION)
             startupRetryBudget.nextDelayMillis() else null
@@ -5041,6 +5410,14 @@ class CarPlayHostActivity : ComponentActivity() {
     private fun restartCarPlay(reason: String) {
         if (!CarPlayBackgroundSession.isOwner(this)) return
         if (shuttingDown.get() || menuOpen || handshakeResetInProgress) return
+        // Issue #359: the stop is a hard gate for this connection episode.
+        // Automatic restart paths (display changes, deferred recoveries,
+        // controller callbacks) must not rebuild the stack behind it; only
+        // clearStartupRetryStop() releases it.
+        if (startupRetryStopped) {
+            appendLog("restart suppressed while automatic retry is stopped: $reason")
+            return
+        }
         val size = activeDisplaySize ?: return
         startupRetryBudget.disconnected()
         startupRetryButton?.visibility = View.GONE
@@ -5722,6 +6099,27 @@ class CarPlayHostActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * Issue #363: with the legacy fullscreen mode, a reverse-camera cycle
+     * re-shows the OEM bottom bar and the immediate re-apply on focus regain
+     * does not always suppress it again — the system overlay settles after
+     * the focus event. Re-assert the same flags a few times over the next
+     * ~1.5 s. No-op unless the legacy mode is enabled.
+     */
+    private fun scheduleHarmanFullscreenReassert() {
+        if (!harmanFullscreenEnabled) return
+        val generation = windowFocusGeneration
+        for (delayMillis in longArrayOf(300L, 800L, 1500L)) {
+            mainHandler.postDelayed({
+                if (!isDestroyed && harmanFullscreenEnabled &&
+                    generation == windowFocusGeneration && hasWindowFocus()
+                ) {
+                    applyFullscreenMode()
+                }
+            }, delayMillis)
+        }
+    }
+
     private fun applyFullscreenMode() {
         val multiWindow = isMultiWindowActive()
         if (harmanFullscreenEnabled) {
@@ -5829,8 +6227,21 @@ class CarPlayHostActivity : ComponentActivity() {
         const val RECONNECT_DELAY_MILLIS = 2_000L
         /** Issue #315: legacy reverse cold start waits this long after reverse exit before restarting the decoder. */
         const val LEGACY_REVERSE_COLD_START_DELAY_MILLIS = 2_500L
+        /** Post-exit restore: debounce before the first focus check, then
+         * the recheck cadence and budget while the camera may still be up. */
+        const val REVERSE_EXIT_RESTORE_DELAY_MILLIS = 600L
+        const val REVERSE_EXIT_RESTORE_RECHECK_MILLIS = 500L
+        const val REVERSE_EXIT_RESTORE_MAX_ATTEMPTS = 5
+        const val LEGACY_REVERSE_RESUME_RECHECK_MILLIS = 800L
+        const val LEGACY_REVERSE_RESUME_MAX_ATTEMPTS = 4
+        /** A reverse manoeuvre never lasts this long; a reverse-active flag
+         * older than this is a missed exit broadcast, not a camera. */
+        const val REVERSE_ACTIVE_GATE_CAP_MILLIS = 120_000L
         /** Issues #275/#243: automatic wired no-TCP retries allowed on pre-Lollipop units before asking for a physical replug. */
         const val WIRED_NO_TCP_FAILURE_LIMIT = 2
+        /** Issue #305: automatic wired USB-busy retries allowed before asking for a physical replug. */
+        const val WIRED_USB_BUSY_FAILURE_LIMIT = 3
+        const val WIRED_USB_STALL_FAILURE_LIMIT = 3
         const val IAP_TUNNEL_RECONNECT_DELAY_MILLIS = 15_000L
         /**
          * Issue #188 follow-up: a human cannot read and dismiss the system VPN

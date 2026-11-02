@@ -323,6 +323,10 @@ class IphoneUsbHost(
         TransitionResult.Failed(IphoneUsbException.DeviceUnavailable("iPhone USB operation failed", error))
     }
 
+    /** Issue #305: surface EBUSY as "busy" so the UI maps it to the unplug guidance. */
+    private fun errnoSuffix(errno: Int?): String =
+        errno?.let { e -> " (usbfs errno $e" + if (e == ERRNO_BUSY) ", interface busy)" else ")" } ?: ""
+
     private fun openIap2UsbSession(
         device: UsbDevice,
         knownConfiguration: CarPlayUsbConfiguration? = null,
@@ -362,7 +366,7 @@ class IphoneUsbHost(
                 throw IphoneUsbException.DeviceUnavailable(
                     "USB CarPlay configuration ${configuration.id} could not be selected; " +
                         "activeConfig=${selected.activeConfiguration ?: "unknown"}" +
-                        (selected.errno?.let { " (usbfs errno $it)" } ?: ""),
+                        errnoSuffix(selected.errno),
                 )
             }
 
@@ -404,7 +408,7 @@ class IphoneUsbHost(
             if (!muxClaim.claimed) {
                 throw IphoneUsbException.DeviceUnavailable(
                     "Android could not claim USBMUX interface ${usbMux.id}" +
-                        (muxClaim.errno?.let { " (usbfs errno $it)" } ?: "") +
+                        errnoSuffix(muxClaim.errno) +
                         " targetConfig=${configuration.id} activeConfig=${activeAfterClaim ?: "unknown"}",
                 )
             }
@@ -532,6 +536,7 @@ class IphoneUsbHost(
         private const val USB_CLAIM_RETRY_DELAY_MILLIS = 400L
         /** usbfs ENOENT: the kernel has no such interface (configuration not adopted). */
         private const val ERRNO_NO_SUCH_FILE = 2
+        private const val ERRNO_BUSY = 16
         private const val USB_VENDOR_DEVICE_IN = 0xc0
         private const val CARPLAY_CONFIGURATION_REQUEST = 0x52
         private const val CARPLAY_CONFIGURATION_INDEX = 0x0004
@@ -576,6 +581,12 @@ class Iap2UsbSession internal constructor(
         usbTransferSize(realSdkInt(), USBMUX_READ_CHUNK_BYTES)
     )
     private val syncReadBuffer = ByteArray(USBFS_BULK_URB_CEILING_BYTES)
+    @Volatile var lastReadSuccessNs = 0L
+        private set
+    @Volatile var lastWriteSuccessNs = 0L
+        private set
+    val readSuccessAgoMs: Long get() = if (lastReadSuccessNs == 0L) -1L else (System.nanoTime() - lastReadSuccessNs) / 1_000_000
+    val writeSuccessAgoMs: Long get() = if (lastWriteSuccessNs == 0L) -1L else (System.nanoTime() - lastWriteSuccessNs) / 1_000_000
     private val readQueuePolicy = UsbReadQueuePolicy(
         if (realSdkInt() < Build.VERSION_CODES.P) USBFS_BULK_URB_CEILING_BYTES else Int.MAX_VALUE,
     )
@@ -590,6 +601,9 @@ class Iap2UsbSession internal constructor(
         if (data.isEmpty()) return@synchronized
         val transferred = writeUsbChunks(data.size, realSdkInt(), timeoutMillis) { offset, count, timeout ->
             sharedConnection.bulkTransfer(outEndpoint, data, offset, count, timeout)
+        }
+        if (transferred == data.size) {
+            lastWriteSuccessNs = System.nanoTime()
         }
         if (transferred != data.size) {
             // A -1 bulk transfer means the device stopped responding (wedged USB stack,
@@ -684,6 +698,7 @@ class Iap2UsbSession internal constructor(
             readQueued = false
             val position = directReadBuffer.position()
             if (position <= 0) return@synchronized null
+            lastReadSuccessNs = System.nanoTime()
             return@synchronized ByteArray(position).also {
                 directReadBuffer.flip()
                 directReadBuffer.get(it)
@@ -761,7 +776,10 @@ class Iap2UsbSession internal constructor(
             } catch (error: RuntimeException) {
                 throw failSession("USBMUX read failed", error)
             }
-            if (transferred > 0) return syncReadBuffer.copyOf(transferred)
+            if (transferred > 0) {
+                lastReadSuccessNs = System.nanoTime()
+                return syncReadBuffer.copyOf(transferred)
+            }
             if (transferred <= 0) {
                 if (System.nanoTime() >= deadline) return null
             }

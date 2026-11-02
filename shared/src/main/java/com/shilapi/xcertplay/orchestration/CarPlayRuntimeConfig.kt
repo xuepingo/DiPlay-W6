@@ -73,6 +73,10 @@ class CarPlayRuntimeConfig(
     val hostapdSsid: String? = null,
     val hostapdPassphrase: String? = null,
     val hostapdChannel: Int = 1,
+    /** Issue #344: Apple vendor IE on the root hostapd beacon; only used in HOSTAPD mode. */
+    val hostapdAppleVendorIe: Boolean = false,
+    /** Issue #343: auto-disconnect phone Bluetooth after wireless CarPlay connects (experimental). */
+    val carplayAutoDisconnectBt: Boolean = false,
     val userspaceNetworkEnabled: Boolean = true,
     /** Issue #266: direct usbfs discovery/open for ROMs whose UsbManager list stays empty. */
     val directUsbfsMode: Boolean = false,

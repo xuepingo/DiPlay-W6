@@ -1545,6 +1545,50 @@ class DiPlayActivity : ComponentActivity() {
                 AirPlayPersistence.saveRootHotspotEnabled(this, it)
                 markReconnectNeeded()
             }
+            // Issue #344: Apple vendor IE on the root hostapd beacon — iPhones
+            // never auto-join an AP without it (a manual tap connects fine,
+            // which proves the rest of the chain). Only affects Root hotspot
+            // mode; applies at the next connection.
+            toggle(card, getString(R.string.settings_hostapd_apple_vendor_ie),
+                getString(R.string.settings_hostapd_apple_vendor_ie_description),
+                AirPlayPersistence.loadHostapdAppleVendorIe(this)) {
+                AirPlayPersistence.saveHostapdAppleVendorIe(this, it)
+                markReconnectNeeded()
+            }
+            // Issue #343: after wireless CarPlay connects, the phone's native
+            // Bluetooth call screen keeps popping up next to the CarPlay call
+            // screen. This switch turns the head unit Bluetooth off once the
+            // session is fully on Wi-Fi (tunnel handoff done), which drops the
+            // native Bluetooth link; Bluetooth is turned back on when the
+            // session ends. Wireless only; applies at the next connection.
+            toggle(card, getString(R.string.settings_carplay_auto_disconnect_bt),
+                getString(R.string.settings_carplay_auto_disconnect_bt_description),
+                AirPlayPersistence.loadCarplayAutoDisconnectBt(this)) {
+                AirPlayPersistence.saveCarplayAutoDisconnectBt(this, it)
+                markReconnectNeeded()
+            }
+            // Issue #343-Q1: when the call downlink is silent on the telephony stream
+            // while media audio works, route just the downlink through the music stream.
+            // Call mode and the microphone uplink stay unchanged; applies at the next
+            // connection, and only affects the telephony stream type and usage.
+            toggle(card, getString(R.string.settings_telephony_downlink_via_music),
+                getString(R.string.settings_telephony_downlink_via_music_description),
+                AirPlayPersistence.loadTelephonyDownlinkViaMusic(this)) {
+                AirPlayPersistence.saveTelephonyDownlinkViaMusic(this, it)
+                markReconnectNeeded()
+            }
+            // Issue #364: some phones/head units never duck media for a
+            // navigation prompt, an assistant reply or a call, so the prompt
+            // fights the music at full volume. When this is on, frame
+            // activity on an announcement channel ducks the media
+            // renderer's gain inside the app and restores it shortly after
+            // the announcement ends. Applies at the next connection.
+            toggle(card, getString(R.string.settings_announcement_duck_media),
+                getString(R.string.settings_announcement_duck_media_description),
+                AirPlayPersistence.loadAnnouncementDuckMedia(this)) {
+                AirPlayPersistence.saveAnnouncementDuckMedia(this, it)
+                markReconnectNeeded()
+            }
         }
         filteredSection(content, SettingsSection.CAR_BUTTON,
             getString(R.string.car_button_in_carplay), R.drawable.ic_dp_car) { card -> carButtonCard = card; carButtonControls(card) }
@@ -3560,6 +3604,12 @@ class DiPlayActivity : ComponentActivity() {
         toggle(dependent, getString(R.string.audio_focus_auto_yield), getString(R.string.audio_focus_auto_yield_desc),
             AirPlayPersistence.loadAudioFocusAutoYield(this)) {
             AirPlayPersistence.saveAudioFocusAutoYield(this, it)
+        }
+        toggle(dependent, getString(R.string.settings_media_focus_exclusive),
+            getString(R.string.settings_media_focus_exclusive_description),
+            AirPlayPersistence.loadMediaFocusExclusive(this)) {
+            AirPlayPersistence.saveMediaFocusExclusive(this, it)
+            markReconnectNeeded()
         }
         parent.addView(dependent)
     }

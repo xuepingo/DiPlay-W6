@@ -1,3 +1,120 @@
+# DiPlay 0.3.13 — 2026-11-02
+
+- Auto-enable reverse cold start and yield hardware overlay layer on legacy units (#315): detect legacy platforms (PF8227/MTK 8227L, Allwinner, Rockchip, Android 4.x/API <= 19) to auto-enable delayed reverse cold start, and temporarily hide SurfaceView hardware overlay during reverse to eliminate GPU layer collisions with the reverse camera.
+- Fix API 17 UsbDeviceConnection.bulkTransfer NoSuchMethodError crash (#371, #368): fallback to 4-parameter overload when 5-parameter bulkTransfer is unavailable on Android 4.2.
+- Hard-gate automatic restarts while startup retry is stopped (#359): prevent background re-triggers from circumventing the connection retry budget latch until manual retry or USB replug.
+
+See [v0.3.13 release notes](docs/RELEASE-NOTES-0.3.13.md) for details.
+# DiPlay 0.3.12 — 2026-11-01
+
+- Reload the radio in hotspot failure teardown (#330, #348): cycle Wi-Fi once (disable, 1s settle, enable) and leave it on during failed hostapd teardown, flushing driver AP-mode runtime residue so subsequent start attempts bind without a reboot.
+- Move reload settle constant below touchedSystem volatile annotation (#330, #348): preserve clean volatile semantics on the lifecycle flag.
+
+See [v0.3.12 release notes](docs/RELEASE-NOTES-0.3.12.md) for details.
+
+# DiPlay 0.3.11 — 2026-11-01
+
+- Do not rebuild picture on unconfirmed reverse exit (#315, #363): add a 600ms focus-confirmation delay and cancellation on re-engagement, preventing flapped CAN broadcasts from displacing the camera view mid-manoeuvre.
+- Duck media while announcement audio flows (Advanced, experimental) (#364): duck media renderer gain when PCM frames write to navigation, assistant, or phone streams, restoring ~1.5s after speech ends.
+- Re-claim NCM data interface when bulk-OUT wedges at zero completions (#75): release and force-reclaim data interface and alternate setting at failure 12, reviving wedged endpoint transfers without a full bus reset.
+- One MainAudio Untake per session; dedup concurrent USB permission requests (#305, #293): send at most one Untake per wired session to prevent picture freeze, and de-duplicate concurrent permission requests within 12ms.
+- Keep failure teardown off interface and radio (#330, #348): avoid taking down wlan0 or disabling Wi-Fi radio on failed hostapd startup, preventing driver lockups on affected Honda head units.
+
+See [v0.3.11 release notes](docs/RELEASE-NOTES-0.3.11.md) for details.
+
+# DiPlay 0.3.10 — 2026-10-31
+
+- Key the transitional-shrink guard by View instance (#363): record the baseline size when a fresh SurfaceView is created, even if its initial bounds match the previous surface, preventing latched settle shrinks and black borders.
+- Add IMMERSIVE_STICKY and delayed fullscreen reassertion (#363): include `SYSTEM_UI_FLAG_IMMERSIVE_STICKY` and re-assert fullscreen after regaining window focus, suppressing lingering OEM system bars after reverse camera cycles.
+- Capture hostapd log file directly via -dd -f in foreground probe (#330, #348): output daemon log directly to file during foreground failure probes instead of relying on shell redirection, capturing actual root causes on affected Honda units.
+
+See [v0.3.10 release notes](docs/RELEASE-NOTES-0.3.10.md) for details.
+
+# DiPlay 0.3.9 — 2026-10-30
+
+- Arm the transitional-shrink guard at surface establishment (#363): record the baseline size upon initial SurfaceView bounds establishment so transitional shrinks after Activity resume are ignored inside the 3s settle window, preventing latched black borders.
+- Do not release Bluetooth bootstrap while an RTSP handler is in flight (#316): defer post-transport USB Bluetooth teardown while `inFlight > 0`, preventing dropped bootstrap transport during multi-second pair-setup requests.
+
+See [v0.3.9 release notes](docs/RELEASE-NOTES-0.3.9.md) for details.
+
+# DiPlay 0.3.8 — 2026-10-30
+
+- Give 32000 Hz microphone requests fallback capture rates (#360): add 48000 Hz (with 3:2 downsample) and 16000 Hz (with 1:2 upsample) capture fallbacks for head units whose audio drivers return -1 on 32000 Hz minimum-buffer queries, fixing telephony uplink silence on RK3188 and similar platforms.
+- Stop the wired retry loop when the iPhone's USB state wedges on STALL (#359): count consecutive failures carrying the all-attempts-stalled hint and stop after 3, prompting the user to unplug, reboot the iPhone, and reconnect across all 7 locales.
+
+See [v0.3.8 release notes](docs/RELEASE-NOTES-0.3.8.md) for details.
+
+# DiPlay 0.3.7 — 2026-10-29
+
+- Post fallback surface re-add out of layout pass (#290): defer the removal and re-addition of the fallback SurfaceView to after the layout traversal (`fallback.post`), eliminating the null pointer dereference on Android 5.1.1 during startup size oscillations.
+- Extract call volume boost from communication mode (#290): decouple `STREAM_VOICE_CALL` volume boosting into an independent helper so that vehicles with mic compatibility enabled still receive boosted call volume and clean restoration.
+- Skip communication mode under telephony downlink music switch (#343): completely bypass `MODE_IN_COMMUNICATION` when routing telephony audio through the music stream, preventing firmware audio routing takeovers from silencing in-call downlink sound.
+
+See [v0.3.7 release notes](docs/RELEASE-NOTES-0.3.7.md) for details.
+
+# DiPlay 0.3.6 — 2026-10-29
+
+- Ignore transitional shrinks inside the settle window after a surface re-add (#290): filter out intermediate smaller bounds within the 3-second settle window after a grow re-add, keeping the restored full-size Surface instead of collapsing back down.
+- Skip MainAudio untake on wireless CarPlay sessions (#293): retain negotiated MainAudio ownership on wireless links instead of issuing Untake changeModes, preventing the iPhone from aborting the screen stream and closing the session.
+
+See [v0.3.6 release notes](docs/RELEASE-NOTES-0.3.6.md) for details.
+
+# DiPlay 0.3.5 — 2026-10-29
+
+- Recover video before retiring the control session; prevent cancelled recovery work from rearming a stale session timeout (#327/#350).
+- Preserve MediaCodec Surface reuse by removing CPU Canvas clearing during decoder release; cover consecutive H.264 decode sessions on Android 4.4 (#316).
+- Drop stale video backlog while output remains live and re-add the fallback surface after reverse return (#351/#290).
+- Bound repeated USB-busy retries, retain the single EBUSY configuration retry, and record NCM queue-versus-wire counters (#305/#352).
+- Restore call volume and speakerphone state; offer an opt-in music-stream telephony downlink, and prefer HFP release over disabling Bluetooth (#343/#290).
+- Request Android 12+ Bluetooth scan permission and capture the hostapd foreground probe exit code (#293/#337).
+
+See [v0.3.5 release notes](docs/RELEASE-NOTES-0.3.5.md) for details.
+
+# DiPlay 0.3.4 — 2026-10-28
+
+- Rebuild video decoder after repeated output stalls (#346): force-rebuild the decoder and cold-start with a fresh IDR frame when output stalls exceed threshold, fixing frozen/corrupt CarPlay video that cannot self-recover after extended driving.
+- Auto-disconnect phone Bluetooth after CarPlay connects (experimental) (#343): new opt-in toggle to automatically disconnect iPhone Bluetooth from the head unit once wireless CarPlay is established, eliminating audio channel conflicts and noise.
+- Apply earpiece loudspeaker remedy on pre-API 24 head units (#343): correctly apply earpiece loudspeaker volume correction on devices below API 24, fixing low or silent audio on affected models.
+- Run hostapd once in the foreground on launch failure (#337): capture real hostapd error output by running it synchronously in the foreground on failure, enabling precise diagnosis on non-rooted head units.
+- Fall back to app_process radio helper when svc leaves wlan0 absent (#301): automatically fall back to the app_process radio path when `svc wifi enable` fails to create wlan0, improving wireless hotspot compatibility on some AOSP head units.
+- Apple vendor IE toggle for root hostapd backend (experimental) (#344): new experimental option to control Apple vendor IE broadcast in root hostapd mode, resolving iPhone association rejections on strict firmware.
+- Keep RFCOMM cause chain in bootstrap failure logs (#293): preserve the full RFCOMM failure cause chain rather than truncating to a generic error, improving wireless connection diagnostic accuracy.
+- Drop apostrophe breaking AAPT string compilation (#343): remove unescaped apostrophe from i18n strings that caused AAPT build failures in affected locales.
+
+See [v0.3.4 release notes](docs/RELEASE-NOTES-0.3.4.md) for details.
+
+# DiPlay 0.3.3 — 2026-10-28
+
+- Wireless link failure forget-and-repair prompt after 4 consecutive failures (#290): surface a targeted dialog guiding users to forget the car hotspot and re-pair after four consecutive link failures, resolving persistent wireless CarPlay connection failures caused by hotspot IP drift or stale credentials.
+- Cap IPv6 address wait at a short grace once IPv4 is usable (#343): compress the remaining IPv6 wait to a short grace period once IPv4 is ready, reducing hotspot setup latency significantly.
+- Force fallback surface recreation on reverse-return height growth (#290): trigger surface rebuild when CarPlay display height grows anomalously during reverse-return, fixing black/frozen screen regressions after exiting reverse camera.
+- Capture hostapd launch evidence on hotspot bring-up failure (#337): save hostapd startup log evidence to diagnostic report on bring-up failure, aiding root-cause analysis on non-rooted head units.
+- Log PCM peak in audio stats (#309): record per-buffer PCM peak (dBFS) in audio statistics alongside ducking diagnostics to help diagnose volume anomalies and silence issues.
+- Best-effort sync on USB diagnostic report copy (#341): fsync after USB report file copy to reduce diagnostic package corruption on low-end head-unit filesystems.
+
+See [v0.3.3 release notes](docs/RELEASE-NOTES-0.3.3.md) for details.
+
+# DiPlay 0.3.2 — 2026-10-27
+
+- Hostapd process check without grep on minimal ROMs (#337): parse `ps` output in pure Kotlin without shell grep/wc/tail pipelines, resolving repeated hostapd kill-and-retry loops on Android 4.2 / MY16ADA.
+- Drop non-primary IPv6 link-local addresses from 0x5703 payload (#290, #339): eliminate 30-second TCP timeouts on wireless CarPlay caused by iPhones preferring unreachable unscoped IPv6 link-locals over working IPv4.
+- Wired CarPlay forced re-enumeration vendor request (#335): ensure forced re-enumeration bypasses stale fast-probe configurations and always issues the 0x51 vendor request with KitKat settle delay.
+- Restore wireless CarPlay MainAudio Untake (#312, #316): allow `takeMainAudio()` to untake audio on wireless sessions when returning from car radio/Bluetooth, resolving silent audio regressions.
+- Audio ducking diagnostics (#309): log volume and duration values for duckAudio/unduckAudio AirPlay commands.
+
+See [v0.3.2 release notes](docs/RELEASE-NOTES-0.3.2.md) for details.
+
+# DiPlay 0.3.1 — 2026-10-27
+
+- Media focus exclusive switch (#290): add an opt-in toggle in Advanced audio-focus controls requesting AUDIOFOCUS_GAIN for media streams, resolving permanent ducking to silence on vendor stacks where MAY_DUCK fails.
+- Wireless CarPlay background handoff & session preservation (#316): preserve wireless session and data channels across app backgrounding and resume transitions, reducing reconnection latency.
+- Layout settle listening through settle window (#290): maintain size change recomputation throughout the 3s settle window, eliminating stuck viewport margins and bottom bars after reverse camera exit.
+- Wi-Fi Direct fast failure & diagnostic polish (#331, #285): fail fast with actionable guidance to Same LAN or wired mode when Wi-Fi Direct is unsupported on hardware/system; record root USB grant failure details in diagnostic log.
+- Bluetooth RFCOMM/DLC eviction & hotspot retry (#165, #313): evict wedged RFCOMM layers on DLC open failures; retry Bluetooth stack reset once when the first client joins hostapd.
+- Resume lifecycle guard (#310): prevent RejectedExecutionException on resume when the dark-mode executor is shut down during teardown.
+
+See [v0.3.1 release notes](docs/RELEASE-NOTES-0.3.1.md) for details.
+
 # DiPlay 0.3.0 — 2026-10-27
 
 - Huawei HiSilicon hardware AVC decoder native port sizing (#324): use unconstrained native port sizing (omit KEY_MAX_INPUT_SIZE override) on OMX.k3.video.decoder.avc, avoiding the fatal ACodec SIGABRT without suffering KitKat software decoder -2 Main/High CABAC black screens.
