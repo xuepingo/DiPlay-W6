@@ -238,6 +238,8 @@ class CarPlayController(
     private val wiredGeneration = AtomicInteger(0)
     @Volatile private var wiredUsbSession: Iap2UsbSession? = null
     @Volatile private var wiredNcm: NcmUsbBridge? = null
+    /** The iPhone device of the running wired bring-up, for wedge recovery inside runStack. */
+    @Volatile private var wiredUsbDevice: UsbDevice? = null
     /** Issue #266 direct mode: the sysfs identity of the phone a direct session runs on. */
     private val directAttemptRunning = AtomicBoolean(false)
     /** Issue #266: pacing for direct bring-up attempts; reset on a real detach. */
@@ -512,6 +514,20 @@ class CarPlayController(
      */
     fun takeMainAudioAndScreen(): Boolean {
         val session = activeSession ?: return false
+        // iOS 27 closes the whole session within milliseconds of an unsolicited changeModes
+        // (W6 reports: Take Screen on resume -> Screen stream inactive -> control socket closed
+        // 33 ms later). Never send it there; the surface re-attach + keyframe request resumes
+        // video without touching resource ownership.
+        if (session.peerOsMajor >= 27) {
+            debugLog("skipping Screen Take on iOS ${session.peerOsMajor}: changeModes would end the session")
+            return false
+        }
+        if (!session.audioReclaimAllowed()) {
+            // The MainAudio Untake would be a protocol violation here (no audio stream, or an
+            // iOS 27 peer that tears the session down over it); reclaim the screen alone.
+            debugLog("reclaim screen only: audioStreamSetUp=${session.audioStreamSetUp} peerIos=${session.peerOsMajor}")
+            return changeModes(resources = listOf(linkedMapOf("resourceID" to 1, "transferType" to 1)))
+        }
         val resources = listOf(
             linkedMapOf("resourceID" to 1, "transferType" to 1), // Take Screen (Accessory displays screen)
             linkedMapOf("resourceID" to 2, "transferType" to 2), // Untake MainAudio (iPhone outputs audio)
@@ -527,6 +543,13 @@ class CarPlayController(
      */
     fun takeMainAudio(): Boolean {
         val session = activeSession ?: return false
+        if (!session.audioReclaimAllowed()) {
+            // iOS 27 closes the control channel within milliseconds of an unexpected MainAudio
+            // Untake (every touch on a video-only W6 wired session did exactly that). A session
+            // without audio has nothing to reclaim, so the command is skipped entirely.
+            debugLog("skipping MainAudio Untake: audioStreamSetUp=${session.audioStreamSetUp} peerIos=${session.peerOsMajor}")
+            return false
+        }
         val resources = listOf(
             linkedMapOf("resourceID" to 2, "transferType" to 2), // Untake MainAudio (iPhone outputs audio)
         )
@@ -610,6 +633,9 @@ class CarPlayController(
     /** Returns true if this wired controller is waiting for an iPhone to be plugged in or reconnected. */
     fun isWiredWaitingForIphone(): Boolean =
         config.transport == CarPlayTransport.WIRED && !closed && (phase == Phase.IPHONE || wiredAborted)
+
+    /** The transport this controller actually runs (the UI hint must follow it, not the setting). */
+    fun isWiredTransport(): Boolean = config.transport == CarPlayTransport.WIRED
 
     fun sendTouch(contacts: List<AirPlayContact>): Boolean {
         if (closed) return false
@@ -1353,8 +1379,8 @@ class CarPlayController(
             // settings) could never get past this check.
             if (!hybridBt.isEnabled()) {
                 runCatching { hybridBt.enable() }
-                val enableDeadline = System.currentTimeMillis() + 3000L
-                while (!hybridBt.isEnabled() && System.currentTimeMillis() < enableDeadline) {
+                val enableDeadline = SystemClock.elapsedRealtime() + 3000L
+                while (!hybridBt.isEnabled() && SystemClock.elapsedRealtime() < enableDeadline) {
                     try {
                         Thread.sleep(200L)
                     } catch (_: InterruptedException) {
@@ -1502,8 +1528,8 @@ class CarPlayController(
                 runCatching { adapter.enable() }
                 // Upstream #822: wait only while the adapter is actually turning on;
                 // break early on other states instead of sleeping the full deadline.
-                val enableDeadline = System.currentTimeMillis() + 3000L
-                while (!adapter.isEnabled && System.currentTimeMillis() < enableDeadline) {
+                val enableDeadline = SystemClock.elapsedRealtime() + 3000L
+                while (!adapter.isEnabled && SystemClock.elapsedRealtime() < enableDeadline) {
                     val state = runCatching { adapter.state }.getOrNull()
                     if (state != BluetoothAdapter.STATE_TURNING_ON) break
                     try {
@@ -1680,8 +1706,8 @@ class CarPlayController(
                 var lateBootstrapDone = false
                 var lastLateAttemptMillis = 0L
                 var lateRetryBackoffMillis = 3500L
-                while (activeSession == null && !wirelessActiveReported.get() && System.currentTimeMillis() < deadline && !isStaleWirelessRun(generation)) {
-                    val now = System.currentTimeMillis()
+                while (activeSession == null && !wirelessActiveReported.get() && SystemClock.elapsedRealtime() < deadline && !isStaleWirelessRun(generation)) {
+                    val now = SystemClock.elapsedRealtime()
                     if (!lateBootstrapDone && hybridAdapter.isEnabled() && (now - lastLateAttemptMillis >= lateRetryBackoffMillis)) {
                         val connectedDev = runCatching { hybridAdapter.getConnectedDevice() }.getOrNull()
                         val targetDev = connectedDev ?: run {
@@ -1924,7 +1950,7 @@ class CarPlayController(
                     }
                 } else {
                     debugLog("wireless Bluetooth bootstrap failed or unavailable (${lastBootstrapError?.message}); falling back to Wi-Fi discovery")
-                    pollLateBluetoothBootstrap(System.currentTimeMillis() + 60000L, lastBootstrapError)
+                    pollLateBluetoothBootstrap(SystemClock.elapsedRealtime() + 60000L, lastBootstrapError)
                     if (isStaleWirelessRun(generation)) {
                         closeWirelessStack(generation = generation)
                         return
@@ -1938,7 +1964,7 @@ class CarPlayController(
                 }
             } else {
                 debugLog("wireless Bluetooth bootstrap unavailable; waiting for AirPlay connection over Wi-Fi")
-                pollLateBluetoothBootstrap(System.currentTimeMillis() + 60000L, null)
+                pollLateBluetoothBootstrap(SystemClock.elapsedRealtime() + 60000L, null)
                 if (isStaleWirelessRun(generation)) {
                     closeWirelessStack(generation = generation)
                     return
@@ -2477,11 +2503,11 @@ class CarPlayController(
                                     reenumerationAttempts < MAXIMUM_REENUMERATION_ATTEMPTS
                                 ) {
                                     forcedReenumerationForAttach = true
-                                    connectionDiagnostic(
+                                    forceVendorReenumeration(
+                                        result.device,
                                         "Previous wired session completed this run; forcing one vendor " +
                                             "re-enumeration before reusing configuration ${configuration.id} (issue #275)",
                                     )
-                                    beginReenumeration(result.device)
                                 } else {
                                     openDataPaths(result.device, configuration)
                                 }
@@ -2612,6 +2638,73 @@ class CarPlayController(
         attempt()
     }
 
+    /**
+     * W6/Android 9: when the fast-probe path reuses a CarPlay configuration the iPhone kept alive,
+     * usbfs can refuse every read queue (down to 512 bytes) until a real re-enumeration resets the
+     * endpoints — the descriptors look fine, only the queue call tells the truth. The wedge is
+     * cured by the vendor 0x51 transition, not by another descriptor probe.
+     */
+    private fun isUsbReadQueueWedged(error: Throwable): Boolean {
+        var cause: Throwable? = error
+        while (cause != null) {
+            val message = cause.message.orEmpty()
+            if (message.contains("could not queue USBMUX read request") ||
+                message.contains("could not queue the NCM read request") ||
+                // Zombie USBMUX session after a settings-change reconnect: the version handshake
+                // gets no reply (or a garbage reply). Recover with a forced vendor re-enumeration
+                // instead of reusing the same dead endpoints on the next attempt.
+                message.contains("USBMUX version reply")
+            ) return true
+            cause = cause.cause
+        }
+        return false
+    }
+
+    /**
+     * Issue #275's "force one vendor re-enumeration" must skip the descriptor probe: the stale
+     * configuration the probe instantly finds is exactly what must not be reused — its USB
+     * endpoints can be wedged, and reopening them froze at "opening the USB data channel" for
+     * 15-30s until a physical replug. A real 0x51 vendor transition resets the endpoints first.
+     */
+    /**
+     * True re-enumeration for the zombie-session case. Apple's vendor request only switches a
+     * phone that is NOT yet in CarPlay mode; once a session existed the request is accepted but
+     * the phone never detaches (W6 logs: hasCarPlayConfig=true isNewDevice=false forever), so the
+     * next USBMUX handshake meets the same dead session. USBDEVFS_RESET bounces the port exactly
+     * like a physical re-plug, which is the only thing that reliably cleared it before.
+     */
+    private fun forceVendorReenumeration(device: UsbDevice, reason: String) {
+        phase = Phase.REENUMERATION
+        reenumerationAttempts += 1
+        val generation = availabilityPollGeneration.incrementAndGet()
+        onStatus(CarPlayStatus.SelectingConfiguration)
+        connectionDiagnostic("$reason; resetting USB port (forced re-enumeration)")
+        executor.execute {
+            val errno = runCatching {
+                val connection = usbManager?.openDevice(device)
+                if (connection == null) {
+                    null
+                } else {
+                    try {
+                        com.shilapi.xcertplay.transport.LegacyUsbHostCompat.resetDevice(connection, ::connectionDiagnostic)
+                    } finally {
+                        connection.close()
+                    }
+                }
+            }.getOrNull()
+            mainHandler.post {
+                if (closed || phase != Phase.REENUMERATION || generation != availabilityPollGeneration.get()) return@post
+                if (errno == 0) {
+                    onStatus(CarPlayStatus.WaitingForReenumeration)
+                    pollReenumeration(device)
+                } else {
+                    connectionDiagnostic("USB port reset unavailable errno=$errno; falling back to vendor re-enumeration")
+                    requestVendorReenumeration(device, generation)
+                }
+            }
+        }
+    }
+
     private fun requestVendorReenumeration(device: UsbDevice, generation: Int) {
         if (closed || phase != Phase.REENUMERATION || generation != availabilityPollGeneration.get()) return
         connectionDiagnostic("USB transition requested count=$reenumerationAttempts")
@@ -2673,11 +2766,11 @@ class CarPlayController(
                 reenumerationAttempts < MAXIMUM_REENUMERATION_ATTEMPTS
             ) {
                 forcedReenumerationForAttach = true
-                connectionDiagnostic(
+                forceVendorReenumeration(
+                    device,
                     "Previous wired session completed this run; forcing one vendor " +
                         "re-enumeration before reusing configuration ${configuration.id} (issue #275)",
                 )
-                beginReenumeration(device)
                 return
             }
             openDataPaths(device, configuration)
@@ -2698,7 +2791,14 @@ class CarPlayController(
                     val found = runCatching { iphoneHost.discover().firstOrNull() }.getOrNull()
                     val hasCarPlayConfig = found != null && runCatching { IphoneCarPlayConfiguration.find(found) != null }.getOrDefault(false)
                     val isNewDevice = found != null && (found.deviceId != previous.deviceId || found.deviceName != previous.deviceName)
-                    if (found != null && (hasCarPlayConfig || isNewDevice || elapsed >= 800)) {
+                    // A forced re-enumeration must not accept the old device just because it still
+                    // exposes the CarPlay configuration — that is exactly the zombie state the
+                    // forced bounce exists to clear (the W6 logs: found after 252ms,
+                    // hasCarPlayConfig=true isNewDevice=false, then the USBMUX handshake hung).
+                    // Wait for a real detach/reattach, or 2s for firmware that never bounces.
+                    val acceptAfter = if (forcedReenumerationForAttach) 2_000L else 800L
+                    val acceptConfig = hasCarPlayConfig && (!forcedReenumerationForAttach || elapsed >= acceptAfter)
+                    if (found != null && (isNewDevice || acceptConfig || elapsed >= acceptAfter)) {
                         availabilityPollGeneration.incrementAndGet()
                         connectionDiagnostic("USB transition polling found device after ${elapsed}ms (hasCarPlayConfig=$hasCarPlayConfig isNewDevice=$isNewDevice)")
                         requestIphonePermission(found)
@@ -2921,14 +3021,25 @@ class CarPlayController(
                             result.session.close()
                             return@openIap2UsbSessionAsync
                         }
+                        wiredUsbDevice = device
                         runStack(result.session, ncm)
                     } catch (error: Throwable) {
                         result.session.close()
-                        if (!closed && !wiredAborted && generation == wiredGeneration.get()) fail(error)
+                        if (closed || wiredAborted || generation != wiredGeneration.get()) return@openIap2UsbSessionAsync
+                        if (isUsbReadQueueWedged(error)) {
+                            persistWiredSessionCompleted(true)
+                            forcedReenumerationForAttach = false
+                        }
+                        fail(error)
                     }
                 }
                 is IphoneUsbHost.Iap2SessionResult.Failed -> {
-                    if (!closed && !wiredAborted && generation == wiredGeneration.get()) fail(result.error)
+                    if (closed || wiredAborted || generation != wiredGeneration.get()) return@openIap2UsbSessionAsync
+                    if (isUsbReadQueueWedged(result.error)) {
+                        persistWiredSessionCompleted(true)
+                        forcedReenumerationForAttach = false
+                    }
+                    fail(result.error)
                 }
             }
         }
@@ -3200,6 +3311,17 @@ class CarPlayController(
             }
             debugLog("wired bring-up failed", error)
             if (!ncmOwnedLocally) vpnService?.detach()
+            // A USBMUX queue wedge must NOT re-enumerate in place from here: the finally block
+            // below still owns the NCM bridge and the mux session, and the forced transition
+            // races that teardown and wedges the bus until a physical replug (the "stuck at
+            // opening the USB data channel" loop). Record the wedge so the NEXT attempt takes
+            // the safe "force one vendor re-enumeration before reusing the configuration" path
+            // (issue #275) after a clean teardown.
+            if (isUsbReadQueueWedged(error)) {
+                debugLog("USB read queue wedged; next attempt will force vendor re-enumeration before reuse")
+                persistWiredSessionCompleted(true)
+                forcedReenumerationForAttach = false
+            }
             fail(error)
         } finally {
             if (ncmOwnedLocally) ncm.close()

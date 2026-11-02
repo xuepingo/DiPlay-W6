@@ -2,7 +2,6 @@
 package com.shilapi.xcertplay
 
 import android.app.Activity
-import android.app.AlertDialog
 import android.app.LocaleManager
 import android.os.Build
 import com.shilapi.xcertplay.compat.realSdkInt
@@ -119,22 +118,20 @@ object AppLocale {
     }
 
     fun showPicker(activity: Activity) {
-        var selected = ALL.indexOf(preference(activity)).coerceAtLeast(0)
-        AlertDialog.Builder(activity)
-            .setTitle(R.string.language_app_language)
-            .setSingleChoiceItems(ALL.map { displayName(activity, it) }.toTypedArray(), selected) { _, index ->
-                selected = index
+        val current = ALL.indexOf(preference(activity)).coerceAtLeast(0)
+        UiDialogs.pick(
+            activity,
+            activity.getString(R.string.language_app_language),
+            ALL.map { displayName(activity, it) },
+            current,
+        ) { index ->
+            val next = ALL[index]
+            if (next != preference(activity)) {
+                save(activity, next)
+                // LocaleManager recreates activities itself on Android 13+.
+                if (Build.VERSION.SDK_INT < 33) activity.recreate()
             }
-            .setPositiveButton(R.string.language_apply) { _, _ ->
-                val next = ALL[selected]
-                if (next != preference(activity)) {
-                    save(activity, next)
-                    // LocaleManager recreates activities itself on Android 13+.
-                    if (Build.VERSION.SDK_INT < 33) activity.recreate()
-                }
-            }
-            .setNegativeButton(R.string.common_cancel, null)
-            .show()
+        }
     }
 
     /** Names stay in their native form for every language; only "system default" is localized. */

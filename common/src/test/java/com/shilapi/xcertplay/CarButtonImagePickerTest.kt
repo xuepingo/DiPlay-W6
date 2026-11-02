@@ -1,7 +1,6 @@
 package com.shilapi.xcertplay
 
 import android.content.ActivityNotFoundException
-import android.app.AlertDialog
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.ActivityInfo
@@ -34,7 +33,6 @@ import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.shadows.ShadowToast
-import org.robolectric.shadows.ShadowAlertDialog
 import org.robolectric.util.ReflectionHelpers
 
 @RunWith(RobolectricTestRunner::class)
@@ -191,9 +189,9 @@ class CarButtonImagePickerTest {
                 it.text.startsWith(activity.getString(R.string.car_button_name) + " · ")
             }
             name.performClick()
-            val dialog = requireNotNull(ShadowAlertDialog.getLatestAlertDialog())
-            views(dialog.window!!.decorView).filterIsInstance<EditText>().single().setText("My car")
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick()
+            val dialog = requireNotNull(UiDialogs.lastLeash)
+            views(dialog.dialog.window!!.decorView).filterIsInstance<EditText>().single().setText("My car")
+            dialog.clickPositive()
             shadowOf(Looper.getMainLooper()).idle()
 
             assertEquals("My car", AirPlayPersistence.loadOemLabel(activity))

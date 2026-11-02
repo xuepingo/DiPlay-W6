@@ -60,7 +60,19 @@ internal class AudioFocusCoordinator(
     private var requestedChannel: AudioChannel? = null
     private var mediaVolume = FULL_VOLUME
     private var closed = false
+    /**
+     * Set on a transient loss/duck (with the generation that raised it), cleared by GAIN,
+     * an empty active set, or close — lets mute recovery wait out long interruptions
+     * (e.g. a WeChat voice message) instead of blaring music over them, and stops a stale
+     * GAIN from an older request from lifting a newer request's mute.
+     */
+    private var transientYieldActive = false
+    private var transientYieldGeneration = Long.MIN_VALUE
+    private var muteRecoveryRenewals = 0
+    /** True while a mute-recovery callback is queued; keeps the Handler untouched otherwise (plain unit tests). */
+    private var muteRecoveryScheduled = false
     private var focusGeneration = 0L
+    private var lastFocusAttemptNanos = 0L
     private var currentListener = listenerFor(focusGeneration)
     /** Wall clock of the last accepted PCM write; only read by the idle check. */
     @Volatile private var lastRenderNanos = 0L
@@ -85,8 +97,22 @@ internal class AudioFocusCoordinator(
 
     private fun listenerFor(generation: Long) = AudioManager.OnAudioFocusChangeListener { change ->
         synchronized(this) {
+            // AUDIOFOCUS_GAIN undoes a transient mute/duck; dropping it leaves the driver with
+            // silence after e.g. a WeChat voice message (issue report). It therefore acts even
+            // when its generation is stale — but never over a mute raised by a newer request.
             if (change == AudioManager.AUDIOFOCUS_GAIN) {
+                if (closed) return@synchronized
+                if (transientYieldActive && generation < transientYieldGeneration) {
+                    Log.i(TAG, "Audio: stale GAIN (gen $generation < mute gen $transientYieldGeneration) ignored")
+                    return@synchronized
+                }
+                transientYieldActive = false
+                transientYieldGeneration = Long.MIN_VALUE
+                muteRecoveryRenewals = 0
                 try { onAudioFocusGain?.invoke() } catch (_: Exception) {}
+                cancelMuteRecovery()
+                setMediaVolume(FULL_VOLUME)
+                return@synchronized
             }
             // Android may have queued callbacks before a request was abandoned or replaced.
             if (generation != focusGeneration || requestedChannel == null || active.isEmpty()) {
@@ -102,15 +128,24 @@ internal class AudioFocusCoordinator(
             }
             runCatching { report("Audio: focus change=$change activeTracks=${active.size}") }
             when (change) {
-                AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> setMediaVolume(DUCKED_VOLUME)
+                AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
+                    transientYieldActive = true
+                    transientYieldGeneration = generation
+                    muteRecoveryRenewals = 0
+                    setMediaVolume(DUCKED_VOLUME)
+                    scheduleMuteRecovery()
+                }
                 AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
                     if (muteMediaOnTransientLoss) {
                         // This reports a temporary Android focus owner, not a confirmed call.
                         Log.i(TAG, "Audio: muting media during transient focus loss")
+                        transientYieldActive = true
+                        transientYieldGeneration = generation
+                        muteRecoveryRenewals = 0
                         setMediaVolume(0f)
+                        scheduleMuteRecovery()
                     }
                 }
-                AudioManager.AUDIOFOCUS_GAIN -> setMediaVolume(FULL_VOLUME)
                 // Keep CarPlay audio running on permanent loss. Some head units
                 // do not send a later gain callback after taking focus back.
             }
@@ -150,6 +185,12 @@ internal class AudioFocusCoordinator(
         closed = true
         active.clear()
         refreshRequest()
+        // Drop pending idle-release / mute-recovery callbacks so nothing fires after teardown.
+        // Only touch the Handler when something is queued (plain unit tests have no Looper).
+        if (muteRecoveryScheduled || idleTimerArmed) {
+            muteRecoveryScheduled = false
+            idleHandler.removeCallbacksAndMessages(null)
+        }
     }
 
     private fun refreshRequest() {
@@ -157,6 +198,12 @@ internal class AudioFocusCoordinator(
         if (primary == null) {
             focusGeneration += 1
             mediaVolume = FULL_VOLUME
+            // The last track is gone: any transient-yield mute dies with it, so a later
+            // acquisition starts unmuted and a queued stale GAIN has nothing to protect.
+            transientYieldActive = false
+            transientYieldGeneration = Long.MIN_VALUE
+            muteRecoveryRenewals = 0
+            cancelMuteRecovery()
             abandonFocusLocked()
             return
         }
@@ -180,11 +227,30 @@ internal class AudioFocusCoordinator(
             .setAudioAttributes(checkNotNull(primary.attributes) as AudioAttributes)
             .setOnAudioFocusChangeListener(currentListener, Handler(Looper.getMainLooper()))
             .build() else null
-        request = next
-        requestedChannel = primary.channel
+        lastFocusAttemptNanos = nowNs()
         val result = if (realSdkInt() >= 26 && next != null) manager?.requestAudioFocus(next as AudioFocusRequest)
         else manager?.requestAudioFocus(currentListener, AudioManager.STREAM_MUSIC, gain)
-        if (result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) setMediaVolume(FULL_VOLUME)
+        if (result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
+            request = next
+            requestedChannel = primary.channel
+            if (!transientYieldActive) {
+                setMediaVolume(FULL_VOLUME)
+            } else if (primary.channel == AudioChannel.MEDIA) {
+                // Media focus came back through our own request while a transient-yield mute
+                // was still pending: no GAIN callback follows a successful request, so lift
+                // here or the driver waits out the recovery timeout in silence. A handover to
+                // phone/assistant keeps the mute — media must never talk over a call.
+                transientYieldActive = false
+                transientYieldGeneration = Long.MIN_VALUE
+                muteRecoveryRenewals = 0
+                cancelMuteRecovery()
+                setMediaVolume(FULL_VOLUME)
+            }
+        }
+        // On failure requestedChannel stays null (nothing was set above), so the next
+        // acquire/onPcmRendered retries instead of believing the channel is taken.
+        // A mute raised by a transient loss deliberately survives a failed replacement
+        // request: only GAIN (or mute recovery) lifts it.
         val line = "Audio: focus requested channel=${primary.channel} gain=$gain granted=$result activeTracks=${active.size}"
         Log.i(TAG, line)
         runCatching { report(line) }
@@ -213,7 +279,13 @@ internal class AudioFocusCoordinator(
         synchronized(this) {
             if (closed || !enabled) return
             // Focus was given back while the tracks stayed open; the phone is audible again.
-            if (requestedChannel == null && active.isNotEmpty()) refreshRequest()
+            // Throttled: this runs on every PCM write, and a head unit that keeps refusing the
+            // request must not be hammered with one attempt per block (M3 retry loop).
+            if (requestedChannel == null && active.isNotEmpty() &&
+                (lastFocusAttemptNanos == 0L || nowNs() - lastFocusAttemptNanos >= FOCUS_RETRY_MIN_NANOS)
+            ) {
+                refreshRequest()
+            }
             // Only a silent media stream is worth giving back: a call, a spoken assistant
             // reply or a guidance prompt is legitimately silent between utterances, and the
             // lease must survive that silence.
@@ -255,6 +327,49 @@ internal class AudioFocusCoordinator(
         active.forEach { (track, entry) -> applyMediaVolume(track, entry) }
     }
 
+    /**
+     * If the GAIN callback is lost (e.g. the interrupting app forgets to release focus),
+     * restore full volume after a grace period so the driver is never left with silence.
+     * While a transient yield is still marked active the grace period is extended instead
+     * of restored outright, so a long interruption (WeChat voice message) is not talked
+     * over; a bounded number of renewals keeps a truly lost GAIN from silencing forever.
+     */
+    private val muteRecovery: Runnable = Runnable {
+        synchronized(this) {
+            muteRecoveryScheduled = false
+            if (mediaVolume >= FULL_VOLUME || active.isEmpty()) {
+                transientYieldActive = false
+                transientYieldGeneration = Long.MIN_VALUE
+                muteRecoveryRenewals = 0
+                return@Runnable
+            }
+            if (transientYieldActive && muteRecoveryRenewals < MUTE_RECOVERY_MAX_RENEWALS) {
+                muteRecoveryRenewals += 1
+                Log.i(TAG, "Audio: mute recovery deferred (transient yield active, attempt ${muteRecoveryRenewals})")
+                scheduleMuteRecovery()
+                return@Runnable
+            }
+            Log.i(TAG, "Audio: mute recovery — restoring volume after timeout")
+            report("Audio: mute recovery timeout, restoring full volume")
+            transientYieldActive = false
+            transientYieldGeneration = Long.MIN_VALUE
+            muteRecoveryRenewals = 0
+            setMediaVolume(FULL_VOLUME)
+        }
+    }
+
+    private fun scheduleMuteRecovery() {
+        muteRecoveryScheduled = true
+        idleHandler.removeCallbacks(muteRecovery)
+        idleHandler.postDelayed(muteRecovery, MUTE_RECOVERY_MILLIS)
+    }
+
+    private fun cancelMuteRecovery() {
+        if (!muteRecoveryScheduled) return
+        muteRecoveryScheduled = false
+        idleHandler.removeCallbacks(muteRecovery)
+    }
+
     private fun applyMediaVolume(track: AudioTrack, entry: Entry) {
         // Telephony and assistant speech remain audible, and navigation never enters this map.
         // This changes only the renderer's relative gain, never Android's user stream volume.
@@ -264,8 +379,11 @@ internal class AudioFocusCoordinator(
     }
 
     private fun AudioChannel.focusPriority(): Int = when (this) {
+        // PHONE outranks MEDIA: an active call must own the focus request (GAIN_TRANSIENT).
+        // With MEDIA on top the request stays MAY_DUCK forever and cannot hold down the head
+        // unit's own player during a call (M2).
+        AudioChannel.PHONE -> 4
         AudioChannel.MEDIA -> 3
-        AudioChannel.PHONE -> 2
         AudioChannel.ASSISTANT -> 1
         AudioChannel.NAVIGATION -> 0
     }
@@ -274,6 +392,16 @@ internal class AudioFocusCoordinator(
         const val TAG = "DiPlay-AudioFocus"
         const val FULL_VOLUME = 1f
         const val DUCKED_VOLUME = 0.2f
+        /** If the GAIN callback is lost, restore volume after this grace period. */
+        const val MUTE_RECOVERY_MILLIS = 3_000L
+        /**
+         * While a transient yield is still marked active the grace period above is renewed
+         * instead of restored (so a long interruption is not talked over), at most this many
+         * times before volume is forced back — a truly lost GAIN must not silence forever.
+         */
+        const val MUTE_RECOVERY_MAX_RENEWALS = 4
+        /** Minimum spacing between focus re-attempts driven by the per-PCM-write retry path. */
+        const val FOCUS_RETRY_MIN_NANOS = 500_000_000L
         /** CarPlay media may pause between songs; only a long silence gives focus back. */
         const val IDLE_RELEASE_MILLIS = 10_000L
         const val IDLE_RELEASE_NANOS = IDLE_RELEASE_MILLIS * 1_000_000L
@@ -2501,15 +2629,33 @@ private class AudioRenderer(
      * Issues #253/#263: scales this stream's PCM16 by the configured percent so the
      * driver can balance navigation against media even when the head unit offers a
      * single volume. Runs once per writePcm call, before the chunked track writes.
+     * Above 100% (any boost — the 125%/150%/300% presets) a soft-knee limiter replaces hard
+     * clipping so loud passages compress smoothly instead of producing harsh digital
+     * distortion.
      */
     private fun applyStreamGain(data: ByteArray, offset: Int, length: Int) {
         if (volumePercent == 100 || length < 2) return
         val factor = volumePercent / 100.0
+        // Any boost above unity uses the soft-knee limiter to avoid harsh digital clipping.
+        val softKnee = factor > 1.0
+        // Hard clip at 70% FS then soft-compress to full scale (tanh-like).
+        val softThreshold = if (softKnee) (32767 * 0.7).toInt() else 32767
         val end = offset + length - 1
         var i = offset
         while (i < end) {
             val sample = (data[i].toInt() and 0xff) or (data[i + 1].toInt() shl 8)
-            val scaled = (sample * factor).toInt().coerceIn(-32768, 32767)
+            var scaled = (sample * factor).toInt()
+            if (softKnee && scaled > softThreshold) {
+                // Map (threshold,∞) → (threshold, 32767) with a smooth curve.
+                val over = (scaled - softThreshold).toDouble()
+                val headroom = 32767.0 - softThreshold
+                scaled = softThreshold + (headroom * (1.0 - Math.exp(-over / headroom))).toInt()
+            } else if (softKnee && scaled < -softThreshold) {
+                val over = (-softThreshold - scaled).toDouble()
+                val headroom = 32767.0 - softThreshold
+                scaled = -softThreshold - (headroom * (1.0 - Math.exp(-over / headroom))).toInt()
+            }
+            scaled = scaled.coerceIn(-32768, 32767)
             data[i] = (scaled and 0xff).toByte()
             data[i + 1] = ((scaled shr 8) and 0xff).toByte()
             i += 2

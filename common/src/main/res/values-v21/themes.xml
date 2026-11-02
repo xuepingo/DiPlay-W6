@@ -6,6 +6,18 @@
         <item name="android:statusBarColor">#0C111B</item>
         <item name="android:windowBackground">#0C111B</item>
         <item name="android:windowActionModeOverlay">true</item>
+        <!-- Car ROMs restyle platform dialogs (light list backgrounds) while item text follows
+             this dark theme, leaving single-choice items white-on-white. Pin the dialog theme. -->
+        <item name="android:alertDialogTheme">@style/Dialog.Xcertplay</item>
+    </style>
+    <style name="Dialog.Xcertplay" parent="android:style/Theme.Material.Dialog.Alert">
+        <item name="android:textColorPrimary">#F2F4F8</item>
+        <item name="android:textColorSecondary">#B8BFC9</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:background">#1C2430</item>
+        <item name="android:colorAccent">#A6C8FF</item>
+        <item name="android:textColor">#F2F4F8</item>
+        <item name="android:textColorHint">#8A93A0</item>
     </style>
     <style name="Theme.AdbCluster" parent="android:Theme.Material.NoActionBar">
         <item name="android:windowIsTranslucent">true</item>

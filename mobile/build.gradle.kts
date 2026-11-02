@@ -36,6 +36,11 @@ android {
         versionCode = 120
         versionName = "0.3.0"
 
+        // Car head units are ARM; the x86/x86_64 copies of the bundled native libraries
+        // (Conscrypt, opus, lwIP) only ever shipped for emulators and cost ~4.7 MB.
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+        }
     }
 
 
@@ -72,6 +77,19 @@ android {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
         isCoreLibraryDesugaringEnabled = true
+    }
+
+    // BouncyCastle ships Picnic PQC test vectors as JAR resources; the app only uses
+    // ChaCha20-Poly1305 / Ed25519 / X25519 / SHA-512 / HKDF and never loads them.
+    packaging {
+        resources {
+            excludes += setOf(
+                "org/bouncycastle/pqc/**",
+                "**/lowmc*.bin.properties",
+                "META-INF/INDEX.LIST",
+                "META-INF/*.version",
+            )
+        }
     }
 }
 

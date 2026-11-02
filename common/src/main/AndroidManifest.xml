@@ -39,16 +39,6 @@
         </intent>
     </queries>
     <application>
-        <receiver android:name="com.shilapi.xcertplay.LegacyMediaKeyReceiver" android:exported="false">
-            <intent-filter><action android:name="android.intent.action.MEDIA_BUTTON" /></intent-filter>
-        </receiver>
-        <!-- Issue #151: GKUI/ECARX units swallow steering-wheel media keys in their own
-             mediacenter receiver before DiPlay's MediaSession sees them. This receiver runs
-             at maximum ordered-broadcast priority but stays disabled unless the runtime
-             detects an ECARX/GKUI unit (see CarPlayMediaKeys), so other cars are unaffected. -->
-        <receiver android:name="com.shilapi.xcertplay.WheelMediaKeyReceiver" android:exported="true" android:enabled="false">
-            <intent-filter android:priority="1000"><action android:name="android.intent.action.MEDIA_BUTTON" /></intent-filter>
-        </receiver>
         <provider
             android:name="com.shilapi.xcertplay.DiagnosticReportProvider"
             android:authorities="${applicationId}.diagnostic-reports"
@@ -121,6 +111,23 @@
                 android:resource="@xml/usb_bt_device_filter" />
         </activity>
 
+        <!-- iPhone counterpart of the USB-BT trampoline: the static intent-filter restores
+             plug-in auto-open and makes the system dialog's "always allow" checkbox stick,
+             without putting a USB_DEVICE_ATTACHED filter back on CarPlayHostActivity (issue #311). -->
+        <activity
+            android:name="com.shilapi.xcertplay.usb.IphoneUsbDeviceAttachedActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
+            </intent-filter>
+            <meta-data
+                android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"
+                android:resource="@xml/usb_iphone_device_filter" />
+        </activity>
+
         <activity
             android:name="com.shilapi.xcertplay.AdbClusterActivity"
             android:label="@string/adb_cluster_activity_label"
@@ -176,26 +183,14 @@
             </intent-filter>
         </service>
 
-        <!-- Optional: steering-wheel keys for the dashboard map zoom (docs/BYD_NAVIGATION.md). -->
-        <service
-            android:name="com.shilapi.xcertplay.WheelKeyService"
-            android:exported="true"
-            android:label="@string/wheel_key_service_label"
-            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
-            <intent-filter>
-                <action android:name="android.accessibilityservice.AccessibilityService" />
-            </intent-filter>
-            <meta-data
-                android:name="android.accessibilityservice"
-                android:resource="@xml/wheel_key_service" />
-        </service>
-
         <receiver
             android:name="com.shilapi.xcertplay.BootReceiver"
             android:enabled="true"
             android:exported="false">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <!-- Qualcomm QVM head units (W6) boot fast and only send QUICKBOOT_POWERON. -->
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
             </intent-filter>
         </receiver>
 

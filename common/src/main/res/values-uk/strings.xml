@@ -666,6 +666,7 @@
     <string name="settings_direct_surface_view_description">Використовує апаратні накладання SurfaceView напряму замість TextureView, оминаючи композицію GPU та значно зменшуючи навантаження на бюджетних автомагнітолах. Налаштування картинки не застосовуються. Перепідключає CarPlay.</string>
     <string name="bluetooth_adapter_unavailable">В автомагнітолі немає вбудованого адаптера Bluetooth; бездротовий CarPlay недоступний. Використовуйте дротове підключення через USB.</string>
     <string name="usb_iphone_busy_or_occupied">USB-порт iPhone зайнятий іншою програмою (наприклад, штатним плеєром iPod). Закрийте плеєр iPod і перепідключіть кабель.</string>
+    <string name="wired_usb_stall_replug_required">iPhone не відповідає на запити конфігурації USB (стан USB завис). Відключіть кабель, перезавантажте iPhone, підключіть його знову та натисніть «Повторити».</string>
     <string name="usb_iphone_permission_not_granted">Дозвіл USB для iPhone не отримано. Перевірте запит дозволів, закрийте плеєр iPod і перепідключіть кабель.</string>
     <string name="bluetooth_device_connected">Підключено</string>
     <string name="manual_input_mac">Ввести MAC вручну</string>
@@ -714,6 +715,16 @@
     <string name="settings_direct_usbfs_mode_description">Для пристроїв, де системний список USB ніколи не показує iPhone: перераховує пристрої напряму та відкриває вузол пристрою, може знадобитися root. Застосовується при наступному підключенні та перезапускає CarPlay.</string>
     <string name="settings_root_hotspot_mode">Root-точка доступу (hostapd) (експериментально)</string>
     <string name="settings_root_hotspot_mode_description">Для рутованих пристроїв, точку доступу яких застосунки відкрити не можуть. DiPlay запускає системний hostapd від root і створює власну точку доступу; оберіть режим Root-точки доступу в налаштуваннях підключення та задайте там назву й пароль. Застосується при наступному підключенні.</string>
+    <string name="settings_hostapd_apple_vendor_ie">Apple vendor IE у Root-точці доступу (експериментально)</string>
+    <string name="settings_hostapd_apple_vendor_ie_description">Додає елемент Apple vendor до маяка Root-точки доступу (hostapd), щоб iPhone підключалися автоматично. Без нього iPhone самі не асоціюються, хоча ручне підключення працює. Впливає лише на режим Root-точки доступу. Застосується при наступному підключенні.</string>
+    <string name="settings_carplay_auto_disconnect_bt">Відключати Bluetooth телефону після підключення CarPlay (експериментально)</string>
+    <string name="settings_carplay_auto_disconnect_bt_description">Після підключення бездротового CarPlay вимикає Bluetooth головного пристрою, щоб екран виклику штатного Bluetooth більше не з’являвся; після завершення сеансу Bluetooth вмикається знову. Тільки бездротове підключення, діє з наступного підключення. У разі аварійного завершення застосунку Bluetooth може залишитися вимкненим — увімкніть його вручну в налаштуваннях системи.</string>
+    <string name="settings_telephony_downlink_via_music">Спрямовувати низхідний звук виклику через музичний потік (експериментально)</string>
+    <string name="settings_telephony_downlink_via_music_description">Спрямовувати низхідний звук виклику через музичний потік замість потоку телефонії, не змінюючи режим виклику та мікрофон. Використовуйте лише якщо низхідний звук виклику не чути в потоці телефонії, а звук мультимедіа працює. Діє з наступного підключення.</string>
+    <string name="settings_announcement_duck_media">Приглушувати мультимедіа під час підказок (експериментально)</string>
+    <string name="settings_announcement_duck_media_description">Поки реально звучить навігація, асистент або виклик, DiPlay знижує гучність мультимедіа всередині застосунку та повертає її приблизно через секунду після завершення підказки. Впливає лише на звук, який відтворює сам DiPlay, і ніколи не змінює системну гучність. Діє з наступного підключення.</string>
+    <string name="settings_dock_bar_refront">Виведення завдання наперед для приховування нижньої панелі (експериментально)</string>
+    <string name="settings_dock_bar_refront_description">Деякі лаунчери утримують нижню панель поверх зображення CarPlay: вікно стискається, а картинка зменшується з чорними смугами. Коли DiPlay виявляє таке стиснення, він виводить своє завдання на передній план, і лаунчери цього типу прибирають панель. Сам екран CarPlay не змінюється. Діє з наступного підключення.</string>
     <string name="settings_hostapd_channel">Канал точки доступу</string>
     <string name="settings_hostapd_channel_description">Лише 2,4 ГГц (канали 1–13). Канал 1 — найсумісніший.</string>
     <string name="hotspot_mode_hostapd">Root-точка доступу (hostapd)</string>
@@ -725,4 +736,8 @@
     <string name="settings_ecarx_hotspot_description">Під час наступного підключення або відкриття DiPlay вимикає звичайний Wi-Fi та вмикає збережену точку доступу автомобіля, зберігаючи назву й пароль. Для запуску після завантаження також увімкніть «Відкривати після запуску автомобіля». На цій системі Android 5.1 дозвіл ADB не потрібен.</string>
     <string name="settings_legacy_hotspot_title">Автозапуск точки доступу автомобіля</string>
     <string name="settings_legacy_hotspot_description">При наступному підключенні або при відкритті DiPlay вимикає звичайний Wi-Fi та запускає збережену точку доступу. На цьому пристрої авторизація ADB не потрібна.</string>
+    <string name="settings_media_focus_exclusive">Ексклюзивний аудіофокус медіа</string>
+    <string name="wireless_forget_device_title">Бездротове підключення не вдається</string>
+    <string name="wireless_forget_device_message">Бездротовий CarPlay не зміг підключитися 4 рази поспіль. На iPhone відкрийте «Параметри → Wi-Fi», забудьте точку доступу головного пристрою та виконайте сполучення заново.</string>
+    <string name="settings_media_focus_exclusive_description">Запитувати постійний фокус для медіа замість приглушення CarPlay іншими програвачами. Допомагає лише на головних пристроях, які приглушують CarPlay до тиші; може заглушити інші програвачі. Діє з наступного підключення.</string>
 </resources>

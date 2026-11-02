@@ -3,16 +3,35 @@ package com.shilapi.xcertplay
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.os.SystemClock
 import android.util.Log
 import com.shilapi.xcertplay.network.CarHotspotSettings
 import com.shilapi.xcertplay.network.CarHotspotStatus
 import com.shilapi.xcertplay.network.CarHotspotTethering
 import com.shilapi.xcertplay.network.WirelessStartupPolicy
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 
 /** Starts the CarPlay host after boot when the user has enabled the startup option. */
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action != Intent.ACTION_BOOT_COMPLETED) return
+        val action = intent.action
+        if (action != Intent.ACTION_BOOT_COMPLETED && action != ACTION_QUICKBOOT_POWERON) return
+        // Qualcomm QVM units broadcast QUICKBOOT_POWERON and may add BOOT_COMPLETED right
+        // after it: process one broadcast of such a mixed pair (M11). Repeated broadcasts of
+        // the SAME action are real later boots — each one runs again and replaces the
+        // recorded startup evidence.
+        val now = SystemClock.elapsedRealtime()
+        val previousAction = lastHandledAction.get()
+        val previousAt = lastHandledElapsed.get()
+        if (previousAction != null && previousAction != action &&
+            previousAt != 0L && now - previousAt < DEDUPE_WINDOW_MILLIS
+        ) {
+            Log.i(TAG, "Boot broadcast $action ignored: paired $previousAction handled ${now - previousAt}ms ago")
+            return
+        }
+        lastHandledAction.set(action)
+        lastHandledElapsed.set(now)
         val launchEnabled = AirPlayPersistence.loadAutoStartOnBoot(context)
         StartupDiagnosticSnapshot.received(context, launchEnabled)
         if (launchEnabled) {
@@ -74,5 +93,10 @@ class BootReceiver : BroadcastReceiver() {
 
     private companion object {
         const val TAG = "xcertplay-boot"
+        const val ACTION_QUICKBOOT_POWERON = "android.intent.action.QUICKBOOT_POWERON"
+        /** QUICKBOOT_POWERON and BOOT_COMPLETED arrive within seconds of each other. */
+        const val DEDUPE_WINDOW_MILLIS = 30_000L
+        val lastHandledAction = AtomicReference<String?>(null)
+        val lastHandledElapsed = AtomicLong(0L)
     }
 }

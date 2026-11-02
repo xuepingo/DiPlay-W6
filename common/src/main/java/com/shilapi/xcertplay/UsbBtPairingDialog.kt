@@ -1,7 +1,8 @@
 package com.shilapi.xcertplay
 
+import android.app.Dialog
+
 import android.app.Activity
-import android.app.AlertDialog
 import android.os.CountDownTimer
 import android.util.Log
 import android.widget.LinearLayout
@@ -132,7 +133,7 @@ object UsbBtPairingDialog {
         layout.addView(numberView)
         layout.addView(countdownView)
 
-        var dialog: AlertDialog? = null
+        var dialog: Dialog? = null
         val timer = object : CountDownTimer(COUNTDOWN_MS, 1_000) {
             override fun onTick(millisUntilFinished: Long) {
                 countdownView.text = activity.getString(R.string.settings_usb_pairing_countdown, millisUntilFinished / 1000)
@@ -143,24 +144,26 @@ object UsbBtPairingDialog {
                 runCatching { dialog?.dismiss() }
             }
         }
-        dialog = AlertDialog.Builder(activity)
-            .setTitle(activity.getString(R.string.settings_usb_pairing_title))
-            .setView(layout)
-            .setPositiveButton(android.R.string.ok) { _, _ ->
+        dialog = UiDialogs.form(activity,
+            activity.getString(R.string.settings_usb_pairing_title),
+            layout,
+            positive = activity.getString(android.R.string.ok),
+            negative = activity.getString(R.string.cancel),
+            onNegative = {
+                timer.cancel()
+                decide(false)
+            },
+            onPositive = { d ->
                 timer.cancel()
                 decide(true)
-            }
-            .setNegativeButton(R.string.cancel) { _, _ ->
-                timer.cancel()
-                decide(false)
-            }
-            .setOnCancelListener {
-                timer.cancel()
-                decide(false)
-            }
-            .create()
+                d.dismiss()
+            },
+        )
         dialog.setCanceledOnTouchOutside(false)
-        dialog.show()
+        dialog.setOnCancelListener {
+            timer.cancel()
+            decide(false)
+        }
         timer.start()
         Log.i(TAG, "pairing dialog shown for $bdAddr number=$number")
     }

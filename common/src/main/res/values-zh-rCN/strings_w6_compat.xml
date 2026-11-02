@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="generic_cluster_display">仪表投射屏幕（实验性）</string>
+    <string name="generic_cluster_display_auto">自动（仅已知车机）</string>
+    <string name="generic_cluster_display_left_half">仪表：主屏左半区（实验性）</string>
+</resources>

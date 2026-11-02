@@ -654,6 +654,7 @@
     <string name="settings_direct_surface_view_description">Utiliza superposiciones de hardware nativas de SurfaceView directamente en lugar de TextureView, omitiendo la composición de la GPU y reduciendo en gran medida la carga en unidades principales de gama baja. Los ajustes de imagen no se aplican. Reconecta CarPlay.</string>
     <string name="bluetooth_adapter_unavailable">La unidad principal no tiene adaptador Bluetooth nativo; CarPlay inalámbrico no disponible. Use un cable USB con cable.</string>
     <string name="usb_iphone_busy_or_occupied">El USB del iPhone está ocupado por otra app (p. ej., reproductor de iPod del coche). Cierre la app y vuelva a conectar el cable.</string>
+    <string name="wired_usb_stall_replug_required">El iPhone no responde a las solicitudes de configuración USB (su estado USB está bloqueado). Desconecta el cable, reinicia el iPhone, vuelve a conectarlo y toca Reintentar.</string>
     <string name="usb_iphone_permission_not_granted">No se otorgó el permiso USB del iPhone. Compruebe las solicitudes de permisos, cierre la app de iPod y vuelva a conectar.</string>
     <string name="bluetooth_device_connected">Conectado</string>
     <string name="manual_input_mac">MAC manual</string>
@@ -702,6 +703,16 @@
     <string name="settings_direct_usbfs_mode_description">Para unidades cuyo listado USB del sistema nunca muestra el iPhone: enumera los dispositivos directamente y abre el nodo del dispositivo; puede requerir root. Se aplica en la próxima conexión y reinicia CarPlay.</string>
     <string name="settings_root_hotspot_mode">Punto de acceso root (hostapd) (experimental)</string>
     <string name="settings_root_hotspot_mode_description">Para unidades rooteadas cuyo punto de acceso no puede abrirse desde las aplicaciones. DiPlay ejecuta el hostapd del sistema como root y crea su propio punto de acceso; elige el modo de punto de acceso root en la configuración de conexión y define allí su nombre y contraseña. Se aplica en la próxima conexión.</string>
+    <string name="settings_hostapd_apple_vendor_ie">Elemento de proveedor Apple en el punto de acceso root (experimental)</string>
+    <string name="settings_hostapd_apple_vendor_ie_description">Añade el elemento de proveedor Apple al beacon del punto de acceso root (hostapd) para que los iPhone se unan automáticamente. Sin él, los iPhone nunca se asocian por sí solos aunque tocar manualmente la red funcione. Solo afecta al modo de punto de acceso root. Se aplica en la próxima conexión.</string>
+    <string name="settings_carplay_auto_disconnect_bt">Desconectar el Bluetooth del teléfono al conectar CarPlay (experimental)</string>
+    <string name="settings_carplay_auto_disconnect_bt_description">Después de conectar CarPlay inalámbrico, apaga el Bluetooth de la unidad para que deje de aparecer la pantalla de llamada del Bluetooth nativo; el Bluetooth se vuelve a encender al terminar la sesión. Solo inalámbrico. Se aplica en la próxima conexión. Si la aplicación se cierra de forma anormal, el Bluetooth puede quedar apagado: vuelve a encenderlo en los ajustes del sistema.</string>
+    <string name="settings_telephony_downlink_via_music">Dirigir el audio descendente de la llamada por el flujo de música (experimental)</string>
+    <string name="settings_telephony_downlink_via_music_description">Dirigir el audio descendente de la llamada por el flujo de música en lugar del flujo de telefonía, sin cambiar el modo de llamada ni el micrófono. Úsalo solo si el audio descendente de la llamada no se oye en el flujo de telefonía mientras el audio multimedia funciona. Se aplica en la próxima conexión.</string>
+    <string name="settings_announcement_duck_media">Atenuar los medios durante los avisos (experimental)</string>
+    <string name="settings_announcement_duck_media_description">Mientras suena de verdad el audio de navegación, del asistente o de una llamada, DiPlay baja el volumen de los medios internamente y lo restablece aproximadamente un segundo después de que termina el aviso. Solo afecta al sonido que reproduce el propio DiPlay y nunca cambia el volumen del sistema. Se aplica en la próxima conexión.</string>
+    <string name="settings_dock_bar_refront">Traer la tarea al frente para ocultar la barra inferior (experimental)</string>
+    <string name="settings_dock_bar_refront_description">Algunos lanzadores mantienen una barra inferior sobre la imagen de CarPlay, comprimen la ventana y la imagen se reduce con bordes negros. Cuando DiPlay detecta esa compresión, trae su propia tarea al frente y los lanzadores de este tipo retiran la barra. La pantalla de CarPlay no cambia. Se aplica en la próxima conexión.</string>
     <string name="settings_hostapd_channel">Canal del punto de acceso</string>
     <string name="settings_hostapd_channel_description">Solo 2,4 GHz (canales 1–13). El canal 1 es el más compatible.</string>
     <string name="hotspot_mode_hostapd">Punto de acceso root (hostapd)</string>
@@ -713,4 +724,8 @@
     <string name="settings_ecarx_hotspot_description">En la próxima conexión o al abrir DiPlay, desactiva el Wi-Fi normal e inicia el punto de acceso guardado del coche. Conserva su nombre y contraseña. Para iniciar al arrancar, activa también «Abrir al arrancar el coche». Esta unidad Android 5.1 no necesita autorización ADB.</string>
     <string name="settings_legacy_hotspot_title">Punto de acceso del vehículo</string>
     <string name="settings_legacy_hotspot_description">En la próxima conexión o al abrir DiPlay, apague el Wi-Fi normal e inicie el punto de acceso guardado del vehículo. No se necesita autorización ADB en esta unidad.</string>
+    <string name="settings_media_focus_exclusive">Foco de audio multimedia exclusivo</string>
+    <string name="wireless_forget_device_title">La conexión inalámbrica sigue fallando</string>
+    <string name="wireless_forget_device_message">CarPlay inalámbrico no ha podido conectar 4 veces seguidas. En el iPhone, ve a Ajustes → Wi-Fi, omite el punto de acceso del equipo y vuelve a emparejar y conectar.</string>
+    <string name="settings_media_focus_exclusive_description">Solicita foco permanente para multimedia en lugar de permitir que otros reproductores atenúen CarPlay. Solo ayuda en unidades que silencian CarPlay al atenuarlo; puede silenciar otros reproductores. Se aplica en la próxima conexión.</string>
 </resources>

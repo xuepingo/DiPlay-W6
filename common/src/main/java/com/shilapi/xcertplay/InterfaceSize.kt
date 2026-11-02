@@ -3,7 +3,6 @@ package com.shilapi.xcertplay
 
 import android.app.Activity
 import com.shilapi.xcertplay.compat.realSdkInt
-import android.app.AlertDialog
 import android.content.Context
 import android.content.res.Configuration
 import android.content.res.Resources
@@ -125,19 +124,17 @@ object InterfaceSize {
         if (choice == AUTO) context.getString(R.string.settings_interface_size_auto) else "$choice%"
 
     fun showPicker(activity: Activity) {
-        var selected = CHOICES.indexOf(preference(activity)).coerceAtLeast(0)
-        AlertDialog.Builder(activity)
-            .setTitle(R.string.settings_interface_size)
-            .setSingleChoiceItems(CHOICES.map { displayName(activity, it) }.toTypedArray(), selected) { _, index ->
-                selected = index
+        val current = CHOICES.indexOf(preference(activity)).coerceAtLeast(0)
+        UiDialogs.pick(
+            activity,
+            activity.getString(R.string.settings_interface_size),
+            CHOICES.map { displayName(activity, it) },
+            current,
+        ) { index ->
+            if (CHOICES[index] != preference(activity)) {
+                save(activity, CHOICES[index])
+                activity.recreate()
             }
-            .setPositiveButton(R.string.language_apply) { _, _ ->
-                if (CHOICES[selected] != preference(activity)) {
-                    save(activity, CHOICES[selected])
-                    activity.recreate()
-                }
-            }
-            .setNegativeButton(R.string.common_cancel, null)
-            .show()
+        }
     }
 }

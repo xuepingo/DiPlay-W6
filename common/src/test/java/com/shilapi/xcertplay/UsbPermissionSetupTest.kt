@@ -1,6 +1,5 @@
 package com.shilapi.xcertplay
 
-import android.app.AlertDialog
 import android.os.Looper
 import android.provider.Settings
 import com.shilapi.xcertplay.adb.LocalAdb
@@ -16,7 +15,6 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
-import org.robolectric.shadows.ShadowAlertDialog
 import org.robolectric.shadows.ShadowSettings
 
 @RunWith(RobolectricTestRunner::class)
@@ -140,7 +138,7 @@ class UsbPermissionSetupTest {
     }
 
     @Test fun progressCancelUnblocksWorkerAndSuppressesLateDialogs() = cancelledUiAttempt {
-        it.getButton(AlertDialog.BUTTON_NEGATIVE).performClick()
+        it.clickNegative()
     }
 
     @Test fun activityStopCancelsWorkerAndSuppressesLateDialogs() = cancelledUiAttempt { _, activity ->
@@ -151,24 +149,24 @@ class UsbPermissionSetupTest {
         DiPlayActivity::class.java.getDeclaredMethod("onDestroy").apply { isAccessible = true }.invoke(activity)
     }
 
-    private fun cancelledUiAttempt(cancel: (AlertDialog) -> Unit) = cancelledUiAttempt { dialog, _ -> cancel(dialog) }
+    private fun cancelledUiAttempt(cancel: (UiDialogs.DialogLeash) -> Unit) = cancelledUiAttempt { dialog, _ -> cancel(dialog) }
 
-    private fun cancelledUiAttempt(cancel: (AlertDialog, DiPlayActivity) -> Unit) {
+    private fun cancelledUiAttempt(cancel: (UiDialogs.DialogLeash, DiPlayActivity) -> Unit) {
         val activity = Robolectric.buildActivity(DiPlayActivity::class.java).get()
         activity.setTheme(android.R.style.Theme_Material_NoActionBar)
         val client = FakeClient().apply { block = true }
         activity.usbPermissionOperationFactory = { operation(client) }
         DiPlayActivity::class.java.getDeclaredMethod("autoApplyPermissions").apply { isAccessible = true }.invoke(activity)
-        val progress = ShadowAlertDialog.getLatestAlertDialog()
+        val progress = requireNotNull(UiDialogs.lastLeash)
         try {
             assertTrue(client.entered.await(3, TimeUnit.SECONDS))
             cancel(progress, activity)
             shadowOf(Looper.getMainLooper()).idle()
             assertTrue(client.cancelled)
-            assertFalse(progress.isShowing)
+            assertFalse(progress.dialog.isShowing)
             assertTrue(client.finished.await(3, TimeUnit.SECONDS))
             shadowOf(Looper.getMainLooper()).idle()
-            assertSame(progress, ShadowAlertDialog.getLatestAlertDialog())
+            assertSame(progress, UiDialogs.lastLeash)
             assertEquals(1, client.commands.size)
         } finally {
             client.cancel()

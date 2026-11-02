@@ -94,7 +94,15 @@ class AudioStream(
                     stats.reading()
                     socket.receive(packet)
                 } catch (_: Exception) {
-                    if (closed.get()) return else continue
+                    if (closed.get()) return
+                    // Back off instead of spinning: a persistently failing socket would
+                    // otherwise burn a core in this loop.
+                    try {
+                        Thread.sleep(20)
+                    } catch (_: InterruptedException) {
+                        return
+                    }
+                    continue
                 }
                 stats.received(
                     size = packet.length,
@@ -180,6 +188,12 @@ class AudioStream(
                 socket.receive(DatagramPacket(buffer, buffer.size))
             } catch (_: Exception) {
                 if (closed.get()) return
+                // Back off instead of spinning on a persistently failing socket.
+                try {
+                    Thread.sleep(20)
+                } catch (_: InterruptedException) {
+                    return
+                }
             }
         }
     }

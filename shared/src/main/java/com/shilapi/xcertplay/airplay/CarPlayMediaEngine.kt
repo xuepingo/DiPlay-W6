@@ -550,10 +550,14 @@ class CarPlayMediaEngine(
             .filter { isScreenStreamType(it.type) }
             .forEach { sink.onScreenStreamActive(it.type, false) }
         sessionStreams.forEach { streams.remove(it)?.close() }
-        audioMeta.clear()
-        pendingMicrophone.clear()
-        audioCaptures.values.forEach(AudioPacketCapture::close)
-        audioCaptures.clear()
+        // Scoped to this session: these maps are keyed by StreamKey(session, …), so the old
+        // global clears wiped the live session's audio metadata, pending microphone config
+        // and packet captures whenever a stale control session closed after a reconnect.
+        audioMeta.keys.filter { it.session === session }.forEach { audioMeta.remove(it) }
+        pendingMicrophone.keys.filter { it.session === session }.forEach { pendingMicrophone.remove(it) }
+        audioCaptures.keys.filter { it.session === session }.forEach { key ->
+            audioCaptures.remove(key)?.close()
+        }
     }
 
     /** Removes ownership before a close that may block on delivery or invoke the sink. */

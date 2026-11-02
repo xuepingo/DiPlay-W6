@@ -7,6 +7,7 @@ import android.content.IntentFilter
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import android.os.Build
+import android.os.SystemClock
 import com.shilapi.xcertplay.compat.realSdkInt
 import android.util.Log
 import com.shilapi.xcertplay.bluetooth.CarPlayBluetooth
@@ -217,7 +218,8 @@ class UsbBtBluetoothAdapter(
         // If none of the permitted devices could be initialized, request permission for the best ungranted candidate.
         if (ungranted.isNotEmpty()) {
             val target = ungranted.first()
-            val now = System.currentTimeMillis()
+            // Elapsed clock (M8): the permission re-request throttle must not follow NTP jumps.
+            val now = SystemClock.elapsedRealtime()
             if (awaitingPermission.compareAndSet(false, true) || (now - lastPermissionRequestMillis > 10_000L)) {
                 lastPermissionRequestMillis = now
                 awaitingPermission.set(true)
@@ -423,8 +425,8 @@ class UsbBtBluetoothAdapter(
 
             if (isInbound) {
                 // If peer just connected inbound, give iOS a brief window (up to 2.5s) to open its inbound iAP2 DLC
-                val waitDeadline = System.currentTimeMillis() + 2500L
-                while (System.currentTimeMillis() < waitDeadline && isEnabled()) {
+                val waitDeadline = SystemClock.elapsedRealtime() + 2500L
+                while (SystemClock.elapsedRealtime() < waitDeadline && isEnabled()) {
                     liveCachedStream(handle, deviceAddress)?.let { existing ->
                         UsbBtLog.log(appContext, TAG, "openRfcommStream: peer opened inbound iAP2 stream for $deviceAddress; reusing")
                         activeStreams.remove(handle, existing)

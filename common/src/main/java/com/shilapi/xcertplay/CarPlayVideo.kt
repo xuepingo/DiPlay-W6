@@ -85,6 +85,11 @@ internal object CarPlayVideo : CarPlayVideoListener {
         when (index) {
             CarPlayMediaButton.NEXT -> player.skip(SKIP_MILLIS)
             CarPlayMediaButton.PREVIOUS -> player.skip(-SKIP_MILLIS)
+            // Explicit PLAY/PAUSE from a media controller must not toggle: pressing PAUSE
+            // while playing used to start playback again (M7). The hardware key still
+            // arrives as PLAY_PAUSE and keeps the toggle behaviour.
+            CarPlayMediaButton.PLAY -> setPlaying(true)
+            CarPlayMediaButton.PAUSE -> setPlaying(false)
             else -> setPlaying(!playing)
         }
         return true

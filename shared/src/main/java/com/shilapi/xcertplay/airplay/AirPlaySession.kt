@@ -83,6 +83,23 @@ class AirPlaySession(
     internal var deviceBtMac = ""
     internal val activeStreams = linkedSetOf<Int>()
 
+    /** Set once this session has accepted an audio stream; a video-only session never sets it. */
+    @Volatile var audioStreamSetUp = false
+        internal set
+
+    /** The peer's iOS major version from SETUP's osVersion (0 = unknown). */
+    @Volatile var peerOsMajor = 0
+        internal set
+
+    /**
+     * MainAudio reclaim (changeModes transferType=Untake) is only a legal state change when the
+     * session actually runs audio. iOS 27 tears the whole session down when it sees an Untake for
+     * a resource the session never started (W6 wired sessions are video-only, so every touch
+     * killed them), and it still appears to reject the command once audio is up.
+     */
+    internal fun audioReclaimAllowed(): Boolean =
+        audioStreamSetUp && (peerOsMajor == 0 || peerOsMajor < 27)
+
     /** Counts the iPhone's cluster stream setups; 0 while no cluster stream is up. */
     @Volatile var clusterStream = 0
         private set
@@ -92,9 +109,12 @@ class AirPlaySession(
     private val closed = AtomicBoolean(false)
     internal val isClosed: Boolean get() = closed.get()
     private val notified = AtomicBoolean(false)
-    private var eventServer: ServerSocket? = null
-    private var eventSocket: Socket? = null
-    private var eventCipher: ControlCipher? = null
+    // Written by the SETUP thread and the event accept/read threads, read from command paths
+    // (setNightMode, event writes) and teardown: without @Volatile a reader can miss a newly
+    // accepted event channel for a long time (M4).
+    @Volatile private var eventServer: ServerSocket? = null
+    @Volatile private var eventSocket: Socket? = null
+    @Volatile private var eventCipher: ControlCipher? = null
     private var eventCseq = 0
     private var pendingNightMode: Boolean? = null
     private val firstTouchSendLogged = AtomicBoolean(false)
@@ -102,8 +122,8 @@ class AirPlaySession(
     /** Issue #282: tracks press starts so each tap's scaled coordinates are logged once. */
     private val touchWasDown = AtomicBoolean(false)
     private val ntp = NtpClock(socket.localAddress)
-    private var keepAliveSocket: DatagramSocket? = null
-    private var keepAliveThread: Thread? = null
+    @Volatile private var keepAliveSocket: DatagramSocket? = null
+    @Volatile private var keepAliveThread: Thread? = null
     private val eventWriteLock = Any()
     private val eventThreads = CopyOnWriteArrayList<Thread>()
 
@@ -695,7 +715,9 @@ class AirPlaySession(
         val deviceId = string(dict["deviceID"])
         val wifiMac = string(dict["macAddress"]).lowercase()
         val model = string(dict["model"])
-        debugLog(AirPlayPeerDiagnostics.summary(model, string(dict["osVersion"]), string(dict["sourceVersion"])))
+        val osVersion = string(dict["osVersion"])
+        peerOsMajor = osVersion.substringBefore('.').toIntOrNull() ?: peerOsMajor
+        debugLog(AirPlayPeerDiagnostics.summary(model, osVersion, string(dict["sourceVersion"])))
         if (deviceId.isNotEmpty()) deviceBtMac = deviceId
         if (name.isNotEmpty() || deviceId.isNotEmpty() || wifiMac.isNotEmpty()) {
             listener.onDeviceInfo(this, AirPlayDeviceInfo(name, deviceId, wifiMac, model))
@@ -747,6 +769,7 @@ class AirPlaySession(
                     )
                     if (streamResponse != null) {
                         activeStreams.add(type)
+                        audioStreamSetUp = true
                         (streamResponse["dataPort"] as? Number)?.toInt()?.let { listener.onPortBound(it, isTcp = false) }
                         (streamResponse["controlPort"] as? Number)?.toInt()?.let { listener.onPortBound(it, isTcp = false) }
                         result.add(streamResponse)
@@ -758,6 +781,7 @@ class AirPlaySession(
                         "dataPort=${streamResponse?.get("dataPort") ?: "none"}")
                     if (streamResponse != null) {
                         activeStreams.add(type)
+                        audioStreamSetUp = true
                         (streamResponse["dataPort"] as? Number)?.toInt()?.let { listener.onPortBound(it, isTcp = true) }
                         result.add(streamResponse)
                     }
@@ -872,6 +896,11 @@ class AirPlaySession(
     }
 
     private fun openKeepAlive(): Int {
+        // Idempotent (M5): a repeated SETUP re-negotiates the same ports instead of orphaning
+        // the previous datagram socket and its receive thread.
+        keepAliveSocket?.let { socket ->
+            if (!socket.isClosed) return socket.localPort
+        }
         val socket = AirPlaySocketBinder.datagram(localAddress, "AirPlay keepalive")
         keepAliveSocket = socket
         keepAliveThread = Thread({ runKeepAlive(socket) }, "airplay-keepalive").apply {
@@ -895,6 +924,11 @@ class AirPlaySession(
     }
 
     private fun openEvent(): Int {
+        // Idempotent (M5): a repeated SETUP must not orphan the previous server socket and
+        // its accept thread — the iPhone just re-negotiates the same event port.
+        eventServer?.let { server ->
+            if (!server.isClosed) return server.localPort
+        }
         val server = AirPlaySocketBinder.server(localAddress, "AirPlay event")
         eventServer = server
         spawnEvent("airplay-event-accept") { acceptEvent(server) }

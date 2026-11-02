@@ -295,7 +295,11 @@ class Iap2UsbMuxHost private constructor(
         private const val TCP_HEADER_BYTES = 20
         private const val TCP_WINDOW_FIELD = 512
         private const val FIRST_SOURCE_PORT = 1
-        private const val HANDSHAKE_TIMEOUT_MILLIS = 60_000L
+        // 5s, not the old 60s: after a settings-change reconnect the iPhone can hold a zombie
+        // USBMUX session and never answer the version handshake. A minute-long wait froze the
+        // "opening USB data channel" screen until the owner unplugged the cable; a short timeout
+        // fails fast and the wedge recovery forces a vendor re-enumeration on the next attempt.
+        private const val HANDSHAKE_TIMEOUT_MILLIS = 5_000L
         private const val MAX_STALE_HANDSHAKE_FRAMES = 32
         private const val CONNECT_TIMEOUT_MILLIS = 5_000L
         private const val WRITE_TIMEOUT_MILLIS = 2_000

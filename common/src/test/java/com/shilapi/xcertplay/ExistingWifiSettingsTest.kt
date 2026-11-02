@@ -1,6 +1,5 @@
 package com.shilapi.xcertplay
 
-import android.app.AlertDialog
 import android.os.Looper
 import android.widget.Button
 import android.widget.EditText
@@ -20,7 +19,6 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
-import org.robolectric.shadows.ShadowAlertDialog
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [29], qualifiers = "en", manifest = Config.NONE)
@@ -54,19 +52,19 @@ class ExistingWifiSettingsTest {
         AirPlayPersistence.saveWirelessHotspotMode(app, WirelessHotspotMode.WIFI_P2P)
         controls().filterIsInstance<Button>().first { it.text.contains("Same LAN") }.performClick()
         shadowOf(Looper.getMainLooper()).idle()
-        ShadowAlertDialog.getLatestAlertDialog().getButton(AlertDialog.BUTTON_NEGATIVE).performClick()
+        UiDialogs.lastLeash!!.clickNegative()
         assertEquals(WirelessHotspotMode.WIFI_P2P, AirPlayPersistence.loadWirelessHotspotMode(app))
         controls().filterIsInstance<Button>().first { it.text.contains("Same LAN") }.performClick()
         shadowOf(Looper.getMainLooper()).idle()
-        val dialog = ShadowAlertDialog.getLatestAlertDialog()
-        val fields = descendants(dialog.window!!.decorView).filterIsInstance<EditText>().toList()
+        val dialog = requireNotNull(UiDialogs.lastLeash)
+        val fields = descendants(dialog.dialog.window!!.decorView).filterIsInstance<EditText>().toList()
         fields[0].setText(" Pocket ") // SSID whitespace is meaningful.
         fields[1].setText("short")
-        dialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick()
-        assertTrue(dialog.isShowing)
+        dialog.clickPositive()
+        assertTrue(dialog.dialog.isShowing)
         assertEquals(WirelessHotspotMode.WIFI_P2P, AirPlayPersistence.loadWirelessHotspotMode(app))
         fields[1].setText("pocket-password")
-        dialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick()
+        dialog.clickPositive()
         assertEquals(WirelessHotspotMode.EXISTING_WIFI, AirPlayPersistence.loadWirelessHotspotMode(app))
         assertEquals(" Pocket ", AirPlayPersistence.loadExistingWifiSsid(app))
     }

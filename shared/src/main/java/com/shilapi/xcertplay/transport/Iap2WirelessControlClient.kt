@@ -1,5 +1,6 @@
 package com.shilapi.xcertplay.transport
 
+import android.os.SystemClock
 import com.shilapi.xcertplay.iap2.message.Iap2CarPlayMessages
 import com.shilapi.xcertplay.iap2.message.Iap2WirelessMessages
 import com.shilapi.xcertplay.iap2.message.Iap2WirelessSessionParameters
@@ -71,7 +72,7 @@ class Iap2WirelessControlClient(
         var wifiConfigurationsSent = 0
         var carPlayStartSessionsSent = 0
         var startSessionResendsSent = 0
-        var lastStartSessionSentAtMillis = 0L
+        var lastStartSessionSentElapsed = 0L
         var preTransportWiFiConfigurationsSent = 0
         var postTransportWiFiConfigurationsSent = 0
         var transportNotificationSeen = false
@@ -149,15 +150,15 @@ class Iap2WirelessControlClient(
                     if (carPlayStartSessionsSent > 0 &&
                         startSessionResendsSent < MAX_START_SESSION_RESENDS
                     ) {
-                        val nowMillis = System.currentTimeMillis()
-                        if (nowMillis - lastStartSessionSentAtMillis >=
+                        val nowElapsed = SystemClock.elapsedRealtime()
+                        if (nowElapsed - lastStartSessionSentElapsed >=
                             START_SESSION_RESEND_INTERVAL_MILLIS
                         ) {
                             beforeStartSession()
                             sendStartSession(endpoint, ::sendControl) { }
                             carPlayStartSessionsSent++
                             startSessionResendsSent++
-                            lastStartSessionSentAtMillis = nowMillis
+                            lastStartSessionSentElapsed = nowElapsed
                             onProgress(
                                 "iap2 tx=0x4301 carplay-start-session " +
                                     "(resend $startSessionResendsSent " +
@@ -213,7 +214,7 @@ class Iap2WirelessControlClient(
                         sendStartSession(endpoint, ::sendControl, onStartSessionSent)
                         stage = later(stage, Iap2WirelessControlStage.CARPLAY_START_SENT)
                         carPlayStartSessionsSent++
-                        lastStartSessionSentAtMillis = System.currentTimeMillis()
+                        lastStartSessionSentElapsed = SystemClock.elapsedRealtime()
                         onProgress("iap2 tx=0x4301 carplay-start-session")
                     }
 
@@ -226,7 +227,7 @@ class Iap2WirelessControlClient(
                                 sendStartSession(endpoint, ::sendControl, onStartSessionSent)
                                 stage = later(stage, Iap2WirelessControlStage.CARPLAY_START_SENT)
                                 carPlayStartSessionsSent++
-                                lastStartSessionSentAtMillis = System.currentTimeMillis()
+                                lastStartSessionSentElapsed = SystemClock.elapsedRealtime()
                                 onProgress("iap2 tx=0x4301 carplay-start-session")
                             }
                         }
@@ -241,7 +242,7 @@ class Iap2WirelessControlClient(
                             // gate closed the resend window immediately,
                             // even though no TCP connection had followed.
                             startSessionResendsSent = 0
-                            lastStartSessionSentAtMillis = System.currentTimeMillis()
+                            lastStartSessionSentElapsed = SystemClock.elapsedRealtime()
                         }
                         transportNotificationSeen = true
                         val identifiers = Iap2WirelessMessages.deviceTransportIdentifier(incoming)

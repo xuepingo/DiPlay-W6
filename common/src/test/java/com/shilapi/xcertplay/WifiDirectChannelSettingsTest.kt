@@ -1,6 +1,5 @@
 package com.shilapi.xcertplay
 
-import android.app.AlertDialog
 import android.content.Context
 import android.os.Looper
 import android.view.View
@@ -20,7 +19,6 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
-import org.robolectric.shadows.ShadowAlertDialog
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [32], qualifiers = "en", manifest = Config.NONE)
@@ -41,10 +39,10 @@ class WifiDirectChannelSettingsTest {
         val control = channelControl(controls())!!
         assertTrue(control.text.toString().endsWith("Auto"))
         control.performClick()
-        val dialog = ShadowAlertDialog.getLatestAlertDialog()
-        assertEquals(0, dialog.listView.checkedItemPosition)
-        select(dialog, 149)
-        dialog.getButton(AlertDialog.BUTTON_NEGATIVE).performClick()
+        val dialog = requireNotNull(UiDialogs.lastLeash)
+        assertEquals(0, dialog.selectedIndex)
+        // The picker applies a row on tap, so "preview then cancel" is dismissing without a tap.
+        dialog.dialog.dismiss()
         shadowOf(Looper.getMainLooper()).idle()
         assertEquals(WifiP2pChannels.AUTO, AirPlayPersistence.loadWifiP2pPreferredChannel(activity))
         assertTrue(control.text.toString().endsWith("Auto"))
@@ -53,9 +51,8 @@ class WifiDirectChannelSettingsTest {
     @Test fun savedChannelSurvivesModeChangesAndCanBeResetToAuto() {
         val control = channelControl(controls())!!
         control.performClick()
-        val dialog = ShadowAlertDialog.getLatestAlertDialog()
-        select(dialog, 149)
-        dialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick()
+        val dialog = requireNotNull(UiDialogs.lastLeash)
+        select(dialog, 149) // Tap applies immediately.
         shadowOf(Looper.getMainLooper()).idle()
         assertEquals(149, AirPlayPersistence.loadWifiP2pPreferredChannel(activity))
         assertTrue(control.text.toString().contains("149"))
@@ -64,10 +61,9 @@ class WifiDirectChannelSettingsTest {
         assertEquals(149, AirPlayPersistence.loadWifiP2pPreferredChannel(activity))
         AirPlayPersistence.saveWirelessHotspotMode(activity, WirelessHotspotMode.WIFI_P2P)
         channelControl(controls())!!.performClick()
-        val reopened = ShadowAlertDialog.getLatestAlertDialog()
-        assertEquals(choices.indexOf(149), reopened.listView.checkedItemPosition)
+        val reopened = requireNotNull(UiDialogs.lastLeash)
+        assertEquals(choices.indexOf(149), reopened.selectedIndex)
         select(reopened, WifiP2pChannels.AUTO)
-        reopened.getButton(AlertDialog.BUTTON_POSITIVE).performClick()
         shadowOf(Looper.getMainLooper()).idle()
         assertEquals(WifiP2pChannels.AUTO, AirPlayPersistence.loadWifiP2pPreferredChannel(activity))
     }
@@ -93,9 +89,9 @@ class WifiDirectChannelSettingsTest {
 
     private val choices get() = listOf(WifiP2pChannels.AUTO) + WifiP2pChannels.channels
 
-    private fun select(dialog: AlertDialog, channel: Int) {
+    private fun select(dialog: UiDialogs.DialogLeash, channel: Int) {
         val index = choices.indexOf(channel)
-        dialog.listView.performItemClick(null, index, index.toLong())
+        dialog.clickOption(index)
     }
 
     private fun controls() = LinearLayout(activity).also {

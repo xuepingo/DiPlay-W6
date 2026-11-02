@@ -52,10 +52,13 @@ class CarHotspotSetupTest {
         assertFalse(CarHotspotSettings.visible(CarHotspotSetup.isBydHeadUnit(context), LocalAdb.Access.READY))
     }
 
-    @Test fun existingNavigationBasedDetectionIsPreserved() {
+    @Test fun navigationAdapterPackagesDoNotEnableNavigationDetectionOnTheW6() {
+        // The W6 itself carries a navigation-adapter/SOME/IP package, so navigation-based
+        // detection is intentionally disabled (see BydOutputSettings.navigationAvailable and
+        // the isBydForceStopHeadUnit note): it must not false-positive into a BYD head unit.
         installPackage("com.byd.amapservice", system = true)
-        assertTrue(BydOutputSettings.navigationAvailable(context))
-        assertTrue(CarHotspotSetup.isBydHeadUnit(context))
+        assertFalse(BydOutputSettings.navigationAvailable(context))
+        assertFalse(CarHotspotSetup.isBydHeadUnit(context))
     }
 
     @Test fun onlyBydWithSupportedAdbSeesTheSettingIncludingBeforeApproval() {

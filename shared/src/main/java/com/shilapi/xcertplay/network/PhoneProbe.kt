@@ -1,5 +1,6 @@
 package com.shilapi.xcertplay.network
 
+import android.os.SystemClock
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
@@ -47,9 +48,10 @@ object PhoneProbe {
 
     private fun probe(interfaceName: String, log: (String) -> Unit) {
         // 1. DHCP completeness, via the kernel ARP table (readable on this Android version).
-        val deadline = System.currentTimeMillis() + ARP_WATCH_MILLIS
+        // Elapsed clock (M8): wall-clock deadlines freeze or storm when NTP corrects the clock.
+        val deadline = SystemClock.elapsedRealtime() + ARP_WATCH_MILLIS
         var phone: InetAddress? = null
-        while (phone == null && System.currentTimeMillis() < deadline) {
+        while (phone == null && SystemClock.elapsedRealtime() < deadline) {
             phone = arpEntryOn(interfaceName)
             if (phone == null) Thread.sleep(ARP_POLL_MILLIS)
         }
@@ -87,11 +89,11 @@ object PhoneProbe {
         )
 
         // 3. Is the phone's mDNS stack alive? Legacy unicast query from an ephemeral port.
-        val asked = System.currentTimeMillis()
+        val asked = SystemClock.elapsedRealtime()
         val answered = runCatching { legacyQuery(phone) }.getOrDefault(false)
         log(
             if (answered) {
-                "wireless phone probe mdns=answered in ${System.currentTimeMillis() - asked}ms " +
+                "wireless phone probe mdns=answered in ${SystemClock.elapsedRealtime() - asked}ms " +
                     "→ 手机 mDNS 栈活着且单播双向都通，问题不在网络层"
             } else {
                 "wireless phone probe mdns=no-answer in ${MDNS_ANSWER_TIMEOUT_MILLIS}ms " +

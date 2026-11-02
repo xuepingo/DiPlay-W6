@@ -276,12 +276,30 @@ class IphoneUsbHost(
         }
     }
 
+    /**
+     * A USBDEVFS_RESET re-enumerates the iPhone; Android then reports no permission for a moment
+     * (the system re-grants it for the fresh device instance within ~1 s). The old immediate
+     * throw turned that into a visible "USB permission has not been granted" failure right after
+     * the forced reset — wait briefly instead, checking the refreshed device instance too.
+     */
+    private fun waitForUsbPermission(device: UsbDevice, timeoutMillis: Long = 2_500L): Boolean {
+        if (usbManager.hasPermission(device)) return true
+        val deadline = SystemClock.uptimeMillis() + timeoutMillis
+        while (SystemClock.uptimeMillis() < deadline) {
+            SystemClock.sleep(100L)
+            if (usbManager.hasPermission(device)) return true
+            val fresh = runCatching { refreshDevice(device) }.getOrNull()
+            if (fresh != null && usbManager.hasPermission(fresh)) return true
+        }
+        return usbManager.hasPermission(device)
+    }
+
     private fun runTransition(
         device: UsbDevice,
         operation: (UsbDeviceConnection) -> TransitionResult,
     ): TransitionResult = try {
         requireConfiguredDevice(device)
-        if (!usbManager.hasPermission(device)) {
+        if (!waitForUsbPermission(device)) {
             throw IphoneUsbException.PermissionDenied("USB permission has not been granted")
         }
         // Issue #112: openDevice() returns null when the UsbDevice object is stale
@@ -310,7 +328,7 @@ class IphoneUsbHost(
         knownConfiguration: CarPlayUsbConfiguration? = null,
     ): Iap2UsbSession {
         requireConfiguredDevice(device)
-        if (!usbManager.hasPermission(device)) {
+        if (!waitForUsbPermission(device)) {
             throw IphoneUsbException.PermissionDenied("USB permission has not been granted")
         }
         // Issue #221/#227: On KitKat (Allwinner T3), let kernel usbfs finish releasing the prior

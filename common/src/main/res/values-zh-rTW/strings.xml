@@ -643,6 +643,8 @@
     <string name="hotspot_network_not_ready">熱點網路未就緒</string>
     <string name="first_tcp_timeout">等待 iPhone 接入 CarPlay 超時</string>
     <string name="wireless_startup_retries_exhausted">自動再試一次已停止，請檢查連線後手動再試一次。</string>
+    <string name="wireless_forget_device_title">無線連線連續失敗</string>
+    <string name="wireless_forget_device_message">無線 CarPlay 已連續 4 次建立連線失敗。請到 iPhone「設定 → Wi-Fi」中找到車機熱點，忽略此裝置後重新配對連線。</string>
     <string name="wired_no_tcp_replug_required">連接反覆失敗。請拔下 iPhone 重新插入，然後點選重試。</string>
     <string name="retry_carplay_connection">重新連線</string>
     <string name="auto_grant_confirm_msg">尚未確認 ADB 授權。如果車機顯示「允許 USB 偵錯？」提示，請允許。\n\n請勾選「一律允許」並點選「確定」，再按一次此按鈕以完成設定。</string>
@@ -715,6 +717,7 @@
     <string name="settings_direct_surface_view_description">使用系統原生硬體疊加圖層（SurfaceView）顯示畫面，繞過 GPU 視圖合成，大幅降低老舊低配車機（如 Android 4.4/6.0、聯發科 MT3561、全志 T3）的系統負載與卡頓。開啟後畫面色彩調節不可用。變更後會重新連線至 CarPlay。</string>
     <string name="bluetooth_adapter_unavailable">車機未提供原生藍牙適配器，無法進行無線連線引導。請在設定中切換為【有線連線】並使用 USB 傳輸線連線。</string>
     <string name="usb_iphone_busy_or_occupied">iPhone USB 介面被原車系統或其他應用程式佔用（如原車 iPod 播放器），請在車機中退出該應用並重新拔插傳輸線。</string>
+    <string name="wired_usb_stall_replug_required">iPhone 未回應 USB 配置請求（其 USB 狀態已卡死）。請拔下傳輸線、重啟 iPhone 並重新連接，然後點擊重試。</string>
     <string name="usb_iphone_permission_not_granted">未能取得 iPhone USB 權限（可能被原車系統攔截或未彈出授權視窗），請嘗試退出原車 iPod 播放器並重新插拔 USB。</string>
     <string name="bluetooth_device_connected">已連線</string>
     <string name="manual_input_mac">手動輸入 MAC</string>
@@ -768,6 +771,16 @@
     <string name="settings_direct_usbfs_mode_description">適用於系統 USB 列表始終看不到 iPhone 的車機：繞過系統列表直接列舉並開啟裝置節點，可能需要 root。會在下次連接時生效，並重新連接 CarPlay。</string>
     <string name="settings_root_hotspot_mode">Root 熱點（hostapd）（實驗性）</string>
     <string name="settings_root_hotspot_mode_description">適用於已 root、且應用完全無法打開熱點的車機。DiPlay 以 root 身份運行系統 hostapd 並自行建立熱點；在連接設定中選擇 Root 熱點模式並設定名稱與密碼。下次連接時生效。</string>
+    <string name="settings_hostapd_apple_vendor_ie">Root 熱點 Apple 廠商資訊元（實驗性）</string>
+    <string name="settings_hostapd_apple_vendor_ie_description">給 Root 熱點（hostapd）的信標加上 Apple 廠商資訊元，iPhone 才會自動加入。沒有它時 iPhone 不會自動關聯（手動點選卻能連上）。僅影響 Root 熱點模式。下次連接時生效。</string>
+    <string name="settings_carplay_auto_disconnect_bt">連上 CarPlay 後自動斷開手機藍牙（實驗性）</string>
+    <string name="settings_carplay_auto_disconnect_bt_description">無線 CarPlay 連上後，關閉車機藍牙，讓手機不再彈出原生藍牙通話介面；工作階段結束時再把藍牙打開。僅無線連線生效，下次連線時生效。如果應用程式異常退出，藍牙可能保持關閉，需在系統設定裡手動重新打開。</string>
+    <string name="settings_telephony_downlink_via_music">通話下行改走音樂流（實驗性）</string>
+    <string name="settings_telephony_downlink_via_music_description">通話下行改走音樂流而不是通話流，通話模式和麥克風上行不變。僅當通話流下行無聲、而媒體音訊有聲時使用。下次連線時生效。</string>
+    <string name="settings_announcement_duck_media">播報時壓低媒體音量（實驗性）</string>
+    <string name="settings_announcement_duck_media_description">導航、語音助理或通話聲音實際播放時，在 DiPlay 內壓低媒體音量，播報結束後約一秒恢復。僅對 DiPlay 自己播放的聲音有效，不改變系統音量。下次連線時生效。</string>
+    <string name="settings_dock_bar_refront">置前任務收起底欄（實驗性）</string>
+    <string name="settings_dock_bar_refront_description">部分車機桌面會把底欄壓在 CarPlay 畫面上，視窗被壓矮、畫面縮小並出現黑邊。DiPlay 偵測到這種擠壓時，會把自己的任務置前，這類桌面會隨之收起底欄。CarPlay 介面本身不會切換。下次連線時生效。</string>
     <string name="settings_hostapd_channel">熱點頻道</string>
     <string name="settings_hostapd_channel_description">僅 2.4 GHz（頻道 1–13），頻道 1 相容性最好。</string>
     <string name="hotspot_mode_hostapd">Root 熱點（hostapd）</string>
@@ -779,4 +792,6 @@
     <string name="settings_ecarx_hotspot_description">下次連線或開啟 DiPlay 時，關閉一般 Wi-Fi 並開啟已儲存的原廠熱點，保留名稱和密碼。如需開機自動執行，請同時啟用「車機啟動後開啟」。此 Android 5.1 車機不需 ADB 授權。</string>
     <string name="settings_legacy_hotspot_title">車機熱點自動開啟</string>
     <string name="settings_legacy_hotspot_description">在下次連線或打開 DiPlay 時，自動關閉 Wi-Fi 並開啟已儲存的車機熱點。保持熱點名稱與密碼不變。如需開機自動啟動，請同時開啟「車機啟動後打開」。在此車機上無需 ADB 授權。</string>
+    <string name="settings_media_focus_exclusive">媒體音訊焦點獨佔</string>
+    <string name="settings_media_focus_exclusive_description">媒體改請求永久焦點，不再讓其他播放器壓低 CarPlay。只對會把 CarPlay 壓到無聲的車機有效；可能導致其他播放器無聲。下次連接生效。</string>
 </resources>

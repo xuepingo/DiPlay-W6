@@ -215,6 +215,41 @@ class AudioFocusAutoYieldTest {
         assertNull(shadowOf(manager).lastAbandonedAudioFocusRequest)
     }
 
+    @Test fun failedReplacementRequestRetriesAndNeverRestoresMutedMedia() {
+        // Same contract as failedReplacementRequestDoesNotRestoreMutedMedia, but with the
+        // media channel still primary (assistant outranks nothing), so the replacement
+        // request actually goes out and fails twice — the mute must survive both.
+        val coordinator = coordinator()
+        val first = track(); val assistant = track(); val second = track()
+        coordinator.acquire(first, AudioChannel.MEDIA, attributes)
+        coordinator.acquire(assistant, AudioChannel.ASSISTANT, attributes)
+        coordinator.listener.onAudioFocusChange(AudioManager.AUDIOFOCUS_LOSS_TRANSIENT)
+        shadowOf(manager).setNextFocusRequestResponse(AudioManager.AUDIOFOCUS_REQUEST_FAILED)
+        coordinator.release(first)
+        shadowOf(manager).setNextFocusRequestResponse(AudioManager.AUDIOFOCUS_REQUEST_FAILED)
+        coordinator.acquire(second, AudioChannel.MEDIA, attributes)
+        assertEquals(listOf(0f), volumes(second))
+        assertTrue(volumes(assistant).isEmpty())
+        coordinator.onExternalFocusChange(AudioManager.AUDIOFOCUS_GAIN)
+        assertEquals(listOf(0f, 1f), volumes(second))
+    }
+
+    @Test fun staleGainFromAnOlderRequestDoesNotLiftANewerMute() {
+        val coordinator = coordinator()
+        val first = track(); val phone = track()
+        coordinator.acquire(first, AudioChannel.MEDIA, attributes)
+        val oldListener = coordinator.listener
+        oldListener.onAudioFocusChange(AudioManager.AUDIOFOCUS_LOSS_TRANSIENT)
+        // The phone handover bumps the request generation; the new request then takes a
+        // transient loss of its own. A GAIN queued by the *old* request must not lift it.
+        coordinator.acquire(phone, AudioChannel.PHONE, attributes)
+        coordinator.listener.onAudioFocusChange(AudioManager.AUDIOFOCUS_LOSS_TRANSIENT)
+        oldListener.onAudioFocusChange(AudioManager.AUDIOFOCUS_GAIN)
+        assertEquals(listOf(0f), volumes(first))
+        coordinator.listener.onAudioFocusChange(AudioManager.AUDIOFOCUS_GAIN)
+        assertEquals(listOf(0f, 1f), volumes(first))
+    }
+
     private fun coordinator(enabled: Boolean = true, autoYield: Boolean = true) =
         AudioFocusCoordinator(context, enabled, autoYield).also(coordinators::add)
     private fun track(): AudioTrack = AudioTrack.Builder().setAudioAttributes(attributes)

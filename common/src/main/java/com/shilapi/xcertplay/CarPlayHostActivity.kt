@@ -63,7 +63,6 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
-import com.shilapi.xcertplay.airplay.CarPlayMediaButton
 import com.shilapi.xcertplay.compat.realSdkInt
 import com.shilapi.xcertplay.airplay.AirPlayConfig
 import com.shilapi.xcertplay.airplay.AirPlayDisplaySettings
@@ -135,9 +134,6 @@ class CarPlayHostActivity : ComponentActivity() {
     private var reconnectAttempts = 0
     /** Issues #275/#243: consecutive wired no-TCP failures on pre-Lollipop units. */
     private var wiredNoTcpFailures = 0
-    private val siriKey = WheelSiriKey()
-    private val siriKeyPresses = WheelKeyPresses()
-    private val legacySiriPresses = mutableSetOf<Triple<Int, Int, Int>>()
     private val startupRetryBudget = WirelessStartupRetryBudget()
     private var startupRetryStopped = false
     private var startupRetryButton: View? = null
@@ -469,19 +465,6 @@ class CarPlayHostActivity : ComponentActivity() {
     )
     private val currentSurface: Surface? get() = videoSurfaceOwner.current
     private var currentSurfaceTexture: SurfaceTexture? = null
-    private var clusterPresentation: ClusterMapPresentation? = null
-    private var clusterSurface: Surface? = null
-    private var clusterMonitor: DiLink51ClusterMonitor? = null
-    private var detectedCluster = ClusterActivityState.Snapshot(null, false)
-    // Keep one surface per layer alive, including while its map card is hidden.
-    private val clusterLayers = mutableMapOf<Boolean, ClusterMapPresentation>()
-    private var clusterTurnGuidance: com.shilapi.xcertplay.hud.ClusterTurnGuidance? = null
-    private val clusterTurnOverlayListener: (com.shilapi.xcertplay.hud.ClusterTurnGuidance?) -> Unit = { guidance ->
-        runOnUiThread {
-            clusterTurnGuidance = guidance
-            applyClusterTurnOverlay()
-        }
-    }
     // Copies of stream 111 outside the dashboard (centre card, launcher maps) each get their own decoder.
     private val mirrorSink: (String, Surface?) -> Unit = { key, surface -> sink?.setMirrorSurface(SCREEN_TYPE_ALT, key, surface) }
     private val mirrorsChanged: () -> Unit = {
@@ -579,12 +562,37 @@ class CarPlayHostActivity : ComponentActivity() {
      * anyway only produces an infinite retry loop with a cryptic error.
      */
     private var vpnConsentUnavailable = false
-    private var vpnDeniedDialog: android.app.AlertDialog? = null
+    private var vpnDeniedDialog: android.app.Dialog? = null
     private var hotspotStatus = HotspotStatus(state = "off")
     private var menuOpen = false
     private var latestStage = "Preparing CarPlay"
     private var darkMode = false
     private var paintWaitingScreen: () -> Unit = {}
+
+    /**
+     * Waiting instructions follow the transport the controller actually runs. A fresh install
+     * defaults to the wireless wording, which misdirected a first USB plug ("put the iPhone
+     * nearby…") while the wired flow needs "unlock the iPhone and allow Trust/CarPlay".
+     */
+    private fun waitingInstructionsText(): String {
+        val wired = controller?.isWiredTransport()
+        return when {
+            wired == true -> getString(R.string.use_a_usb_data_cable_and_unlock_your_iphone_allow_trust_an)
+            wired == false -> getString(R.string.keep_your_iphone_nearby_with_bluetooth_and_wi_fi_on_allow)
+            // No controller yet (cold start): trust the physical USB presence over the saved
+            // preference — a fresh install defaults to wireless wording, which misdirected a
+            // first USB plug for the first seconds until the controller came up.
+            appleDeviceOnUsb() -> getString(R.string.use_a_usb_data_cable_and_unlock_your_iphone_allow_trust_an)
+            wirelessEnabled -> getString(R.string.keep_your_iphone_nearby_with_bluetooth_and_wi_fi_on_allow)
+            else -> getString(R.string.use_a_usb_data_cable_and_unlock_your_iphone_allow_trust_an)
+        }
+    }
+
+    /** True while an iPhone (Apple vendor id) is enumerated on the USB bus. */
+    private fun appleDeviceOnUsb(): Boolean = runCatching {
+        val usb = getSystemService(Context.USB_SERVICE) as android.hardware.usb.UsbManager
+        usb.deviceList.values.any { it.vendorId == IphoneUsbMatcher.APPLE_VENDOR_ID }
+    }.getOrDefault(false)
     private var carPlayNightMode = CarPlayNightMode.SYSTEM
     private var nightSchedule = CarPlayNightSchedule()
     private var ambientLightThreshold = AmbientLightThreshold()
@@ -598,7 +606,6 @@ class CarPlayHostActivity : ComponentActivity() {
             onNightChanged = { night ->
                 darkMode = night
                 paintWaitingScreen()
-                applyClusterTurnOverlay()
                 appendLog("CarPlay switched to ${if (night) "night" else "day"} mode")
                 logThemeState(nightModeDiagnosticSource, resources.configuration)
                 syncAirPlayDarkMode(nightModeDiagnosticSource)
@@ -607,6 +614,8 @@ class CarPlayHostActivity : ComponentActivity() {
     }
     private val themeDiagnostics = ThemeModeDiagnostics()
     private var lastConfiguration: Configuration? = null
+    /** Last explicit (clock-corrected) day/night signal fed to [nightModeController]; null = none yet. */
+    private var lastEffectiveSystemNight: Boolean? = null
     private var activeAirPlaySession: AirPlaySession? = null
     private val activeScreenStreamTypes = mutableSetOf<Int>()
     private var handshakeResetInProgress = false
@@ -637,12 +646,6 @@ class CarPlayHostActivity : ComponentActivity() {
     private val airPlayCommandExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private val logLines = ArrayDeque<LogEntry>()
     private val expireOldLogLines = Runnable { refreshLogView(System.currentTimeMillis()) }
-    private val refreshTurnOverlay = object : Runnable {
-        override fun run() {
-            com.shilapi.xcertplay.hud.BydNavigationOutputs.refreshTurnOverlay()
-            mainHandler.postDelayed(this, 1_000L)
-        }
-    }
     // Some head units (e.g. BYD DiLink) update resources.configuration for day/night
     // without delivering onConfigurationChanged, so poll while the activity is visible.
     private val pollConfiguration = object : Runnable {
@@ -740,7 +743,6 @@ class CarPlayHostActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         NavigationWidgetUpdater.attach(applicationContext)
-        CarPlayCallKeys.install(applicationContext)
         // USB-Bluetooth dongle: route Numeric Comparison pairing requests to
         // this Activity's dialog (no-op when no dongle stack is present).
         runCatching {
@@ -761,16 +763,6 @@ class CarPlayHostActivity : ComponentActivity() {
             finish(); return
         }
         DiPlayBootstrap.restoreUsbBluetooth(this)
-        WheelKeyService.restoreIfNeeded(this)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1) {
-            val displayManager = if (realSdkInt() >= Build.VERSION_CODES.M) {
-                getSystemService(android.hardware.display.DisplayManager::class.java)
-            } else {
-                @Suppress("DEPRECATION")
-                getSystemService(Context.DISPLAY_SERVICE) as? android.hardware.display.DisplayManager
-            }
-            displayManager?.registerDisplayListener(clusterDisplayListener, mainHandler)
-        }
         initializeSessionLog()
         installCrashDiagnostics()
         val reverseFilter = IntentFilter().apply {
@@ -799,7 +791,7 @@ class CarPlayHostActivity : ComponentActivity() {
         runCatching { registerReceiver(reverseCameraReceiver, reverseFilter) }
         lastConfiguration = Configuration(resources.configuration)
         darkMode = savedInstanceState?.getBoolean("carplay_night_active")
-            ?: nightModeOrNull(resources.configuration.uiMode) ?: false
+            ?: effectiveSystemNight()
         logThemeState(ThemeModeDiagnostics.Source.CREATE, resources.configuration)
         advancedAudioChannelMappingSupported =
             resources.getBoolean(R.bool.config_advanced_audio_channel_mapping)
@@ -849,7 +841,7 @@ class CarPlayHostActivity : ComponentActivity() {
         nightSchedule = AirPlayPersistence.loadCarPlayNightSchedule(this)
         nightModeController.configure(
             carPlayNightMode,
-            nightModeOrNull(resources.configuration.uiMode) ?: false,
+            effectiveSystemNight(),
             ambientLightThreshold,
             ambientDelaySeconds,
             nightSchedule,
@@ -999,13 +991,14 @@ class CarPlayHostActivity : ComponentActivity() {
     private fun showVpnDeniedRetryDialog() {
         if (shuttingDown.get() || isFinishing || isDestroyed) return
         vpnDeniedDialog?.dismiss()
-        vpnDeniedDialog = android.app.AlertDialog.Builder(this)
-            .setTitle(getString(R.string.vpn_consent_was_denied))
-            .setMessage(getString(R.string.vpn_consent_denied_retry_hint))
-            .setPositiveButton(getString(R.string.vpn_consent_retry)) { _, _ -> requestVpnConsent() }
-            .setNegativeButton(getString(R.string.cancel), null)
-            .setOnDismissListener { vpnDeniedDialog = null }
-            .show()
+        vpnDeniedDialog = UiDialogs.confirm(this,
+            getString(R.string.vpn_consent_was_denied),
+            getString(R.string.vpn_consent_denied_retry_hint),
+            positive = getString(R.string.vpn_consent_retry),
+            negative = getString(R.string.cancel),
+            onPositive = { requestVpnConsent() },
+        )
+        vpnDeniedDialog?.setOnDismissListener { vpnDeniedDialog = null }
     }
 
     private fun requestWirelessPermissions() {
@@ -1095,7 +1088,7 @@ class CarPlayHostActivity : ComponentActivity() {
         val savedThreshold = AirPlayPersistence.loadAmbientLightThreshold(this)
         val savedDelay = AirPlayPersistence.loadAmbientDelaySeconds(this)
         val savedSchedule = AirPlayPersistence.loadCarPlayNightSchedule(this)
-        val systemNight = nightModeOrNull(resources.configuration.uiMode) ?: false
+        val systemNight = effectiveSystemNight()
         if (savedNightMode != carPlayNightMode || savedThreshold != ambientLightThreshold ||
             savedDelay != ambientDelaySeconds || savedSchedule != nightSchedule) {
             carPlayNightMode = savedNightMode
@@ -1167,20 +1160,8 @@ class CarPlayHostActivity : ComponentActivity() {
         advancedAudioChannelMapping =
             advancedAudioChannelMappingSupported &&
                 AirPlayPersistence.loadAdvancedAudioChannelMapping(this)
-        if (realSdkInt() >= Build.VERSION_CODES.LOLLIPOP &&
-            DiLink51ClusterLayout.automatic(this) && clusterMonitor == null) {
-            clusterMonitor = DiLink51ClusterMonitor(this, ::onClusterActivityState).also { it.start() }
-        } else if (!DiLink51ClusterLayout.automatic(this)) {
-            clusterMonitor?.stop()
-            clusterMonitor = null
-        }
         if (!menuOpen) gestureFingerCount = AirPlayPersistence.loadSettingsGestureFingers(this)
         settingsGestureHint?.text = getString(R.string.open_diplay_settings_hint, gestureFingerCount)
-        ensureClusterPresentation()
-        AirPlayPersistence.overlaySettingsListener = { runOnUiThread { applyClusterTurnOverlay() } }
-        com.shilapi.xcertplay.hud.BydNavigationOutputs.setTurnOverlayListener(clusterTurnOverlayListener)
-        mainHandler.removeCallbacks(refreshTurnOverlay)
-        mainHandler.post(refreshTurnOverlay)
         var systemBarsChanged = false
         if (!menuOpen) {
             val savedHideTopBar = AirPlayPersistence.loadHideTopBar(this)
@@ -1205,246 +1186,16 @@ class CarPlayHostActivity : ComponentActivity() {
     }
 
 
-    // Experimental: the CarPlay instrument-cluster stream on the BYD cluster projection display.
-    private fun effectiveClusterTheme(): DiLink51ClusterLayout.Theme =
-        if (DiLink51ClusterLayout.automatic(this)) detectedCluster.theme ?: DiLink51ClusterLayout.theme(this)
-        else DiLink51ClusterLayout.theme(this)
-
-    private fun onClusterActivityState(state: ClusterActivityState.Snapshot) {
-        if (state != detectedCluster) appendLog("Cluster map: detected theme=${state.theme} mapVisible=${state.mapVisible}")
-        detectedCluster = state
-        if (!AirPlayPersistence.loadClusterMapEnabled(this)) { dismissClusterPresentation(); return }
-        ensureClusterPresentation()
-    }
-
-    private fun ensureClusterPresentation() {
-        if (!AirPlayPersistence.loadClusterMapEnabled(this)) {
-            dismissClusterPresentation()
-            return
-        }
-        if (AdbClusterRouter.enabled(this)) {
-            ClusterActivityOutput.bind(this, taskId) { onClusterSurface(it) }
-            ClusterActivityOutput.setStreamActive(SCREEN_TYPE_ALT in activeScreenStreamTypes)
-            applyClusterTurnOverlay()
-            runCatching { ClusterActivityOutput.ensure(this) }.onFailure {
-                appendLog("Cluster activity: launch failed ${it.javaClass.simpleName}: ${it.message}")
-            }
-            return
-        }
-        ClusterActivityOutput.stop(this)
-        val theme = effectiveClusterTheme()
-        if (DiLink51ClusterLayout.supported()) {
-            ensureDiLink51ClusterPresentation(theme)
-            return
-        }
-        if (clusterPresentation != null) return
-        val display = ClusterMapPresentation.findDisplay(this, theme) ?: run {
-            appendLog("Cluster map: no cluster projection display among ${ClusterMapPresentation.describeDisplays(this)}")
-            return
-        }
-        val presentation = ClusterMapPresentation(this, display, theme) { surface -> runOnUiThread { onClusterSurface(surface) } }
-        // The system dismisses a presentation when its display goes away; allow a new one on resume.
-        presentation.setOnDismissListener {
-            if (clusterPresentation === presentation) {
-                clusterPresentation = null
-                com.shilapi.xcertplay.hud.BydNavigationOutputs.setClusterMapShown(false)
-                updateClusterMapShown()
-            }
-        }
-        try {
-            presentation.show()
-            clusterPresentation = presentation
-            updateClusterMapShown()
-            presentation.setStreamActive(SCREEN_TYPE_ALT in activeScreenStreamTypes)
-            applyClusterTurnOverlay()
-            Log.i(ClusterMapPresentation.TAG, "cluster presentation shown display=${display.displayId} name=${display.name}")
-            appendLog("Cluster map: presentation shown display=${display.displayId} name=${display.name}")
-        } catch (error: RuntimeException) {
-            Log.w(ClusterMapPresentation.TAG, "cluster presentation failed", error)
-            appendLog("Cluster map: presentation failed ${error.javaClass.simpleName}: ${error.message}")
-        }
-    }
-
-    private fun ensureDiLink51ClusterPresentation(theme: DiLink51ClusterLayout.Theme) {
-        val fullMap = theme == DiLink51ClusterLayout.Theme.MAP
-        val visible = !DiLink51ClusterLayout.automatic(this) || detectedCluster.mapVisible
-        clusterLayers.filterKeys { it != fullMap }.values.forEach { it.setMapVisible(false) }
-        var target = clusterLayers[fullMap]
-        if (target == null) {
-            val display = ClusterMapPresentation.findDisplay(this, theme) ?: return
-            lateinit var presentation: ClusterMapPresentation
-            presentation = ClusterMapPresentation(this, display, theme) { surface ->
-                runOnUiThread {
-                    if (clusterPresentation === presentation) onClusterSurface(surface)
-                }
-            }
-            presentation.setOnDismissListener {
-                if (clusterLayers[fullMap] === presentation) clusterLayers.remove(fullMap)
-                if (clusterPresentation === presentation) clusterPresentation = null
-                updateClusterMapShown()
-            }
-            try {
-                presentation.setMapVisible(false)
-                clusterPresentation = presentation
-                clusterLayers[fullMap] = presentation
-                presentation.show()
-                appendLog("Cluster map: retained layer display=${display.displayId} fullMap=$fullMap")
-                target = presentation
-            } catch (error: RuntimeException) {
-                clusterLayers.remove(fullMap)
-                clusterPresentation = null
-                appendLog("Cluster map: presentation failed ${error.javaClass.simpleName}: ${error.message}")
-                return
-            }
-        }
-        clusterPresentation = target
-        target.outputSurface?.let(::onClusterSurface)
-        target.setStreamActive(SCREEN_TYPE_ALT in activeScreenStreamTypes)
-        target.setMapVisible(visible)
-        updateClusterMapShown()
-        applyClusterTurnOverlay()
-    }
-
-    private fun applyClusterTurnOverlay() {
-        val overlay = CarPlayClusterDisplay.usesCustomTurnCard(AirPlayPersistence.loadClusterContent(this))
-        ClusterActivityOutput.setTurnCard(if (overlay) clusterTurnGuidance else null,
-            AirPlayPersistence.loadClusterTurnCardOverlayXPercent(this),
-            AirPlayPersistence.loadClusterTurnCardOverlayYPercent(this),
-            AirPlayPersistence.loadClusterTurnCardOverlaySizePercent(this),
-            AirPlayPersistence.loadClusterTurnCardOpacityPercent(this), darkMode)
-        val presentations = (clusterLayers.values + listOfNotNull(clusterPresentation)).distinct()
-        for (presentation in presentations) {
-            presentation.setTurnCardOverlay(
-                AirPlayPersistence.loadClusterTurnCardOverlayXPercent(this),
-                AirPlayPersistence.loadClusterTurnCardOverlayYPercent(this),
-                AirPlayPersistence.loadClusterTurnCardOverlaySizePercent(this),
-            )
-            presentation.setTurnCardOpacity(AirPlayPersistence.loadClusterTurnCardOpacityPercent(this))
-            presentation.setTurnCardNightMode(darkMode)
-            presentation.setTurnCardGuidance(if (overlay) clusterTurnGuidance else null)
-        }
-    }
-
-    private fun dismissClusterPresentation() {
-        ClusterActivityOutput.stop(this)
-        val presentations = (clusterLayers.values + listOfNotNull(clusterPresentation)).distinct()
-        clusterLayers.clear()
-        clusterPresentation = null
-        clusterSurface?.let { sink?.clearSurface(SCREEN_TYPE_ALT, it) }
-        clusterSurface = null
-        presentations.forEach { runCatching { it.dismiss() } }
+    // The W6 has no injectable instrument; stream 111 only feeds the centre map card (MapMirrors).
+    private fun updateClusterMapShown() {
         com.shilapi.xcertplay.hud.BydNavigationOutputs.setClusterMapShown(false)
         controller?.setDashboardMapOutputVisible(false)
     }
 
-    private fun onClusterSurface(surface: Surface?) {
-        if (clusterSurface === surface) return
-        // A direct handoff lets MediaCodec.setOutputSurface preserve its reference frames.
-        // Clearing first would destroy the decoder and can leave stream 111 waiting for an IDR.
-        if ((!DiLink51ClusterLayout.supported() && !AdbClusterRouter.enabled(this)) || surface == null) {
-            clusterSurface?.let { old -> sink?.clearSurface(SCREEN_TYPE_ALT, old) }
-        }
-        clusterSurface = surface
-        // Never fall back to the main surface: two decoders must not draw into one Surface.
-        if (surface != null) {
-            if (AdbClusterRouter.enabled(this) && ClusterActivityOutput.hasConfirmedRoute() &&
-                !adbClusterConfigured && controller != null) {
-                ClusterActivityOutput.setStreamActive(false)
-                reconnectAfterLoss("DiLink 4 cluster confirmed; requesting its native stream")
-            } else sink?.setSurface(SCREEN_TYPE_ALT, surface)
-        }
-        updateClusterMapShown()
-    }
-
-    private var adbClusterConfigured = false
-    // Whether the running session's cluster stream was sized for a physical cluster display.
-    private var clusterStreamOnDisplay = false
-
-    // DiLink 3 creates its cluster display only after DiPlay first projects to the cluster, which can
-    // finish after the session has already asked for the virtual fallback stream.
-    private val clusterDisplayListener = object : android.hardware.display.DisplayManager.DisplayListener {
-        override fun onDisplayAdded(displayId: Int) {
-            if (isDestroyed || !AirPlayPersistence.loadClusterMapEnabled(this@CarPlayHostActivity)) return
-            val display = ClusterMapPresentation.findDisplay(this@CarPlayHostActivity, effectiveClusterTheme())
-            if (display?.displayId != displayId) return
-            appendLog("Cluster map: display ${display.name} appeared")
-            ensureClusterPresentation()
-            if (controller != null && !clusterStreamOnDisplay) {
-                reconnectAfterLoss("Cluster display appeared; requesting its stream")
-            }
-        }
-        override fun onDisplayRemoved(displayId: Int) = Unit
-        override fun onDisplayChanged(displayId: Int) = Unit
-    }
 
     private fun clusterDisplayConfig(): AirPlayDisplayConfig? {
-        adbClusterConfigured = false
-        clusterStreamOnDisplay = false
         if (!AirPlayPersistence.loadClusterMapEnabled(this)) return null
-        if (AdbClusterRouter.enabled(this) && ClusterActivityOutput.hasConfirmedRoute()) {
-            adbClusterConfigured = true
-            clusterStreamOnDisplay = true
-            return DiLink4ClusterDisplay.streamConfig(AirPlayPersistence.loadClusterContent(this),
-                AirPlayPersistence.loadClusterMarkerHorizontalStep(this),
-                AirPlayPersistence.loadClusterMarkerVerticalStep(this),
-                AirPlayPersistence.loadClusterSafeAreaRect(this)).also {
-                MapMirrors.streamAspect = it.widthPixels.toDouble() / it.heightPixels
-                appendLog("Cluster activity: requesting stream 111 at ${it.widthPixels}x${it.heightPixels}; safeArea=${it.safeArea} drawOutside=${it.safeAreaDrawOutside}; ADB task routing")
-            }
-        }
-        val theme = effectiveClusterTheme()
-        val display = ClusterMapPresentation.findDisplay(this, theme)
-        if (display != null) {
-            val size = ClusterMapPresentation.sizeOf(display)
-            if (size.x > 0 && size.y > 0) {
-                clusterStreamOnDisplay = true
-                if (DiLink51ClusterLayout.supported()) {
-                    val plan = DiLink51ClusterLayout.plan(size.x, size.y, theme) ?: return null
-                    return DiLink51ClusterLayout.streamConfig().also {
-                        MapMirrors.streamAspect = it.widthPixels.toDouble() / it.heightPixels
-                        appendLog("Cluster map: fixed 1920x720 stream; layout=$theme viewport=$plan")
-                    }
-                }
-                if (DiLink4ClusterDisplay.matches(display.name, size.x, size.y)) {
-                    return DiLink4ClusterDisplay.streamConfig(
-                        AirPlayPersistence.loadClusterContent(this),
-                        AirPlayPersistence.loadClusterMarkerHorizontalStep(this),
-                        AirPlayPersistence.loadClusterMarkerVerticalStep(this),
-                        AirPlayPersistence.loadClusterSafeAreaRect(this),
-                    ).also { MapMirrors.streamAspect = it.widthPixels.toDouble() / it.heightPixels }
-                }
-                val requestedScale = AirPlayPersistence.loadClusterMapScalePercent(this)
-                fun streamAt(scale: Int) = CarPlayClusterDisplay.config(
-                    size.x,
-                    size.y,
-                    scale,
-                    AirPlayPersistence.loadClusterMarkerHorizontalStep(this),
-                    AirPlayPersistence.loadClusterMarkerVerticalStep(this),
-                    AirPlayPersistence.loadClusterContent(this),
-                )
-                val requested = streamAt(requestedScale)
-                // The smaller-map preset enlarges the encoded canvas beyond this panel. Probe
-                // the same selected hardware decoder as the main-screen enlargement guard.
-                val effective = if (requestedScale > 100) {
-                    val support = largerCanvasSupport(requested)
-                    appendLog("Cluster map: ${support.details}")
-                    if (support.supported) requested else {
-                        val native = streamAt(100)
-                        val fallback = if (largerCanvasSupport(native).supported) 100
-                            else CarPlayClusterDisplay.STREAM_SCALE_PERCENT
-                        AirPlayPersistence.saveClusterMapScalePercent(this, fallback)
-                        appendLog("Cluster map: scale $requestedScale% refused (${support.reason}); using $fallback%")
-                        streamAt(fallback)
-                    }
-                } else requested
-                return effective.also {
-                    MapMirrors.streamAspect = it.widthPixels.toDouble() / it.heightPixels
-                    appendLog("Cluster map: requesting ${it.widthPixels}x${it.heightPixels} on ${size.x}x${size.y} safeArea=${it.safeArea} url=${it.initialUrl}")
-                }
-            }
-        }
-        // Fallback for head units without physical cluster projection (e.g. DiLink 3.0/3.5 without digital cluster):
-        // Provide standard virtual cluster stream (1280x720, 16:9 aspect) for CenterMapOverlay and MapEmbedService.
+        // W6: no physical cluster projection. The virtual 16:9 stream feeds the centre map card.
         MapMirrors.streamAspect = MapMirrors.VIRTUAL_STREAM_ASPECT
         return CarPlayClusterDisplay.config(
             widthPixels = 1280,
@@ -1459,22 +1210,6 @@ class CarPlayHostActivity : ComponentActivity() {
 
     // Hardware navigation belongs to the iPhone-rendered CarPlay UI, not Android View focus.
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        val physicalKey = Triple(event.deviceId, event.keyCode, event.scanCode)
-        val downOrUp = event.action == KeyEvent.ACTION_DOWN || event.action == KeyEvent.ACTION_UP
-        if (downOrUp && physicalKey in legacySiriPresses) {
-            if (event.action == KeyEvent.ACTION_UP) {
-                legacySiriPresses.remove(physicalKey)
-                requestLegacySiri(event.keyCode)
-            }
-            return true
-        }
-        // A release/repeat belongs to its original press even if a call, session or setting changed.
-        if (downOrUp && siriKeyPresses.hasConsumedPress(physicalKey)) {
-            siriKeyPresses.filter(physicalKey, event.action == KeyEvent.ACTION_DOWN, event.repeatCount == 0) {
-                WheelZoomKeys.Action.PASS
-            }
-            return true
-        }
         if (!menuOpen && AndroidTvInputMode.shouldUseKnobAsPrimaryInput(this) &&
             CarPlayRemoteKeys.dispatch(event, controller)) {
             if (event.repeatCount == 0) {
@@ -1485,49 +1220,7 @@ class CarPlayHostActivity : ComponentActivity() {
             }
             return true
         }
-
-        // During a CarPlay call the wheel's call key answers on the iPhone instead of opening BYD's phone app.
-        if (CarPlayCallKeys.onKey(this, event.keyCode, event.action == KeyEvent.ACTION_DOWN, controller)) return true
-
-        // The wheel key service, when it runs, takes an assigned Siri key before this window sees it.
-        val assignedKey = WheelZoomSettings.isSiriKey(this, WheelKey.of(event))
-        val assignedAction = if (downOrUp) siriKeyPresses.filter(
-            physicalKey, event.action == KeyEvent.ACTION_DOWN, event.repeatCount == 0,
-        ) {
-            if (activeAirPlaySession == null || !assignedKey || inCall(this)) {
-                return@filter WheelZoomKeys.Action.PASS
-            }
-            if (siriKey.opens(event.eventTime)) {
-                val message = "Siri: assigned key ${event.keyCode} sent=${controller?.requestSiri() == true}"
-                Log.i(WheelKeyService.TAG, message)
-                appendLog(message)
-            }
-            WheelZoomKeys.Action.CONSUME
-        } else WheelZoomKeys.Action.PASS
-        if (assignedAction != WheelZoomKeys.Action.PASS) return true
-        if (downOrUp && assignedKey) return super.dispatchKeyEvent(event)
-
-        // Media keys that reach this window (typical on aftermarket head units whose wheel
-        // keys are not routed to the media session) go to the iPhone as CarPlay media HID
-        // presses, mirroring the GKUI/ECARX broadcast path. Consuming them here keeps the
-        // media session from seeing the same press a second time.
-        if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0 &&
-            CarPlayMediaKeys.handleWheelMediaKey(event.keyCode)) {
-            return true
-        }
-
-        // Keep DiPlay's existing steering-wheel/voice-key Siri handling intact.
-        if (!CarPlayMediaButton.opensSiri(event.keyCode)) return super.dispatchKeyEvent(event)
-        if (event.action == KeyEvent.ACTION_DOWN) legacySiriPresses.add(physicalKey)
-        if (event.action == KeyEvent.ACTION_UP) {
-            requestLegacySiri(event.keyCode)
-        }
-        return true
-    }
-
-    private fun requestLegacySiri(keyCode: Int) {
-        val sent = controller?.requestSiri() == true
-        appendLog("Siri: voice key $keyCode sent=$sent")
+        return super.dispatchKeyEvent(event)
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -1636,19 +1329,6 @@ class CarPlayHostActivity : ComponentActivity() {
         appendLog(if (surface != null) "Centre map: mirroring the dashboard stream" else "Centre map: mirror stopped")
     }
 
-    // The dashboard map pause must not stop the stream while a copy of the map is on screen.
-    private fun updateClusterMapShown() {
-        com.shilapi.xcertplay.hud.BydNavigationOutputs.setClusterMapShown((clusterPresentation != null ||
-            (ClusterActivityOutput.hasConfirmedRoute() && clusterSurface != null)) && !MapMirrors.any)
-        // Wheel zoom needs a physical map; centre-screen copies must not suppress that eligibility.
-        val surface = clusterSurface?.takeIf { it.isValid }
-        val presentation = clusterPresentation
-        val presented = surface != null && presentation?.isShowing == true && presentation.mapVisible &&
-            presentation.outputSurface === surface
-        val direct = surface != null && adbClusterConfigured && ClusterActivityOutput.hasConfirmedRoute()
-        controller?.setDashboardMapOutputVisible(presented || direct)
-    }
-
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
         refreshConfiguration(newConfig, ThemeModeDiagnostics.Source.CALLBACK)
@@ -1678,20 +1358,6 @@ class CarPlayHostActivity : ComponentActivity() {
         pictureBinding = null
         removeVideoSurfaceProbe()
         fallbackVideoView?.holder?.removeCallback(fallbackSurfaceCallback)
-        mainHandler.removeCallbacks(refreshTurnOverlay)
-        mainHandler.removeCallbacks(hideDockRunnable)
-        AirPlayPersistence.overlaySettingsListener = null
-        com.shilapi.xcertplay.hud.BydNavigationOutputs.setTurnOverlayListener(null)
-        if (realSdkInt() >= 21) clusterMonitor?.stop()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1) {
-            val displayManager = if (realSdkInt() >= Build.VERSION_CODES.M) {
-                getSystemService(android.hardware.display.DisplayManager::class.java)
-            } else {
-                @Suppress("DEPRECATION")
-                getSystemService(Context.DISPLAY_SERVICE) as? android.hardware.display.DisplayManager
-            }
-            displayManager?.unregisterDisplayListener(clusterDisplayListener)
-        }
         mainHandler.removeCallbacks(hideIdleCenterMap)
         homeMonitor?.stop()
         CenterMapOverlay.hide()
@@ -1701,7 +1367,6 @@ class CarPlayHostActivity : ComponentActivity() {
             MapMirrors.setStreamActive(false)
         }
         if (MapMirrors.onChanged === mirrorsChanged) MapMirrors.onChanged = null
-        dismissClusterPresentation()
         mainHandler.removeCallbacks(applyDisplaySize)
         mainHandler.removeCallbacks(expireOldLogLines)
         mainHandler.removeCallbacks(pollConfiguration)
@@ -1712,6 +1377,7 @@ class CarPlayHostActivity : ComponentActivity() {
         sessionLog?.append("Activity destroyed")
         sessionLog?.close()
         if (crashDiagnosticLog === sessionLog) crashDiagnosticLog = null
+        if (AsyncDiagnosticLog.defaultTarget === sessionLog) AsyncDiagnosticLog.defaultTarget = null
         sessionLog = null
         vpnDeniedDialog?.dismiss()
         vpnDeniedDialog = null
@@ -1782,8 +1448,7 @@ class CarPlayHostActivity : ComponentActivity() {
         panel.addView(diagnostic)
         stageDiagnosticView = diagnostic
         val instructions = TextView(this).apply {
-            text = if (wirelessEnabled) getString(R.string.keep_your_iphone_nearby_with_bluetooth_and_wi_fi_on_allow)
-                else getString(R.string.use_a_usb_data_cable_and_unlock_your_iphone_allow_trust_an)
+            text = waitingInstructionsText()
             gravity = Gravity.CENTER
         }
         panel.addView(instructions)
@@ -1834,6 +1499,7 @@ class CarPlayHostActivity : ComponentActivity() {
             title.setTextColor(colors.text)
             stage.setTextColor(colors.text)
             instructions.setTextColor(colors.secondary)
+            instructions.text = waitingInstructionsText()
             gestureHint.setTextColor(colors.secondary)
         }
         paintWaitingScreen()
@@ -3198,29 +2864,29 @@ class CarPlayHostActivity : ComponentActivity() {
 
     private fun showCarBrandPresetsDialog() {
         val presets = CarBrandPresets.ALL
-        val items = presets.map { it.displayName(this) }.toTypedArray()
-        android.app.AlertDialog.Builder(this)
-            .setTitle(getString(R.string.car_brand_presets_title))
-            .setItems(items) { _, which ->
-                val preset = presets[which]
-                val bytes = preset.loadBytes(this)
-                if (bytes != null) {
-                    AirPlayPersistence.saveCustomAirPlayIcon(this, bytes)
-                    AirPlayPersistence.saveOemLabel(this, preset.defaultOemName)
-                    oemLabel = preset.defaultOemName
-                    settingsBaseline = settingsBaseline?.copy(customIconBytes = bytes)
-                    updateAirPlayIconPreview()
-                    oemLabelInputView?.setText(preset.defaultOemName)
-                    android.widget.Toast.makeText(
-                        this,
-                        getString(R.string.car_brand_icon_applied, preset.displayName(this)) +
-                            " (" + getString(R.string.car_button_saved_next_connection) + ")",
-                        android.widget.Toast.LENGTH_SHORT,
-                    ).show()
-                }
+        UiDialogs.pick(
+            this,
+            getString(R.string.car_brand_presets_title),
+            presets.map { it.displayName(this) },
+            0,
+        ) { which ->
+            val preset = presets[which]
+            val bytes = preset.loadBytes(this)
+            if (bytes != null) {
+                AirPlayPersistence.saveCustomAirPlayIcon(this, bytes)
+                AirPlayPersistence.saveOemLabel(this, preset.defaultOemName)
+                oemLabel = preset.defaultOemName
+                settingsBaseline = settingsBaseline?.copy(customIconBytes = bytes)
+                updateAirPlayIconPreview()
+                oemLabelInputView?.setText(preset.defaultOemName)
+                android.widget.Toast.makeText(
+                    this,
+                    getString(R.string.car_brand_icon_applied, preset.displayName(this)) +
+                        " (" + getString(R.string.car_button_saved_next_connection) + ")",
+                    android.widget.Toast.LENGTH_SHORT,
+                ).show()
             }
-            .setNegativeButton(getString(R.string.cancel), null)
-            .show()
+        }
     }
 
     // Between the driver's side and the bottom the dock moves at once (and is saved at once) when the
@@ -4554,7 +4220,6 @@ class CarPlayHostActivity : ComponentActivity() {
                         return@runOnUiThread
                     }
                     activeScreenStreamTypes.clear()
-                    ClusterActivityOutput.setStreamActive(false)
                     if (controller?.isWiredWaitingForIphone() == true) {
                         appendLog("Wired AirPlay session ended (USB detached); keeping controller waiting for iPhone")
                         setConnectionStage(getString(R.string.waiting_for_iphone_over_usb))
@@ -4575,7 +4240,6 @@ class CarPlayHostActivity : ComponentActivity() {
                         return@runOnUiThread
                     }
                     activeScreenStreamTypes.clear()
-                    ClusterActivityOutput.setStreamActive(false)
                     if (controller?.isWiredWaitingForIphone() == true) {
                         appendLog("Wired transport error after USB detach ($message); keeping controller waiting for iPhone")
                         setConnectionStage(getString(R.string.waiting_for_iphone_over_usb))
@@ -4662,18 +4326,16 @@ class CarPlayHostActivity : ComponentActivity() {
             CarPlayBackgroundSession.clear(snapshot.controller)
             return false
         }
-        // The sink's pacing is fixed when it is built; a session from before a Smooth video change (for
-        // example one whose reconnect stopped at a prerequisite) is stopped instead of adopted. Callers
-        // retry, and the next start matches this view.
+        // The sink's pacing is fixed when it is built. Rejecting a mismatch here stopped the
+        // session and ran a full USB re-handshake every time the driver returned from the car
+        // launcher. Sync the view to the sink instead: the difference only affects frame pacing
+        // and surface parking for this session, and the next fresh start honours the setting.
         if (!backgroundSessionMatchesView(snapshot.sink.videoPacingEnabled, smoothVideo)) {
-            appendLog("Background session smooth video=${snapshot.sink.videoPacingEnabled} differs from this view; " +
-                "stopping it instead of adopting it")
-            CarPlayBackgroundSession.stop { mainHandler.post { if (!isDestroyed) maybeStartCarPlay() } }
-            return false
+            appendLog("Background session smooth video=${snapshot.sink.videoPacingEnabled}; " +
+                "syncing this view (was $smoothVideo) and adopting instead of reconnecting")
+            smoothVideo = snapshot.sink.videoPacingEnabled
         }
         displayDiagnosticAttempt = DisplayDiagnosticSnapshot.currentAttempt(this)
-        adbClusterConfigured = AdbClusterRouter.enabled(this) && snapshot.controller.configuredClusterSize() ==
-            (DiLink4ClusterDisplay.STREAM_WIDTH to DiLink4ClusterDisplay.STREAM_HEIGHT)
         controller = snapshot.controller
         updateClusterMapShown()
         sink = snapshot.sink
@@ -4813,7 +4475,6 @@ class CarPlayHostActivity : ComponentActivity() {
             }
         }
         currentSurface?.let(::attachSurface)
-        clusterSurface?.let { renderer.setSurface(SCREEN_TYPE_ALT, it) }
         MapMirrors.reapply()
         val media = createMediaEngine(renderer)
         val pairings = AirPlayPersistence.loadPairings(this) { id, key ->
@@ -4868,11 +4529,39 @@ class CarPlayHostActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * Effective system night state for "follow system" mode. The W6 head unit decides
+     * day/night from headlights/ambient light, not clock — so during the daytime it may
+     * report NIGHT_YES (e.g. headlights on in a tunnel). Cross-check with the phone clock:
+     * if the clock says daytime (06:00–18:00) but uiMode says night, prefer day.
+     * UI_MODE_NIGHT_UNDEFINED keeps the last explicit state — the same contract as
+     * [refreshConfiguration] — falling back to day before any signal was seen (H4).
+     */
+    private fun effectiveSystemNight(): Boolean {
+        val uiNight = nightModeOrNull(resources.configuration.uiMode)
+            ?: return lastEffectiveSystemNight ?: false
+        val effective = uiNight && inNightHours()
+        lastEffectiveSystemNight = effective
+        return effective
+    }
+
+    /** Clock correction shared with [refreshConfiguration]: anything outside 06:00–18:00 is night. */
+    private fun inNightHours(): Boolean =
+        java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY).let { it < 6 || it >= 18 }
+
     private fun refreshConfiguration(
         newConfig: Configuration = resources.configuration,
         source: ThemeModeDiagnostics.Source,
     ) {
-        if (lastConfiguration == newConfig) {
+        // The controller consumes the clock-corrected state, not the raw uiMode: with a
+        // constant uiMode the effective state still flips at 06:00/18:00 (H3), so both must
+        // match before this is a no-op. Comparing the whole Configuration instead would
+        // react to unrelated field changes and waste work.
+        val newUiMode = newConfig.uiMode
+        val effective = nightModeOrNull(newUiMode)?.let { it && inNightHours() }
+        if (lastConfiguration?.uiMode == newUiMode &&
+            (effective == null || effective == lastEffectiveSystemNight)
+        ) {
             logThemeState(source, newConfig)
             return
         }
@@ -4880,15 +4569,19 @@ class CarPlayHostActivity : ComponentActivity() {
         lastConfiguration = Configuration(newConfig)
         nightModeDiagnosticSource = source
         try {
-            nightModeOrNull(newConfig.uiMode)?.let { nightModeController.systemChanged(it) }
+            // Keep the previous state on UI_MODE_NIGHT_UNDEFINED (null): only an explicit
+            // day/night signal moves the controller, with the daytime clock correction applied.
+            effective?.let {
+                lastEffectiveSystemNight = it
+                nightModeController.systemChanged(it)
+            }
         } finally {
             nightModeDiagnosticSource = ThemeModeDiagnostics.Source.CARPLAY_MODE
         }
         logThemeState(source, newConfig)
     }
 
-    private fun logThemeState(source: ThemeModeDiagnostics.Source, configuration: Configuration) {
-        themeDiagnostics.observe(
+    private fun logThemeState(source: ThemeModeDiagnostics.Source, configuration: Configuration) {        themeDiagnostics.observe(
             source, configuration.uiMode, darkMode, activeAirPlaySession != null, SystemClock.elapsedRealtime(),
         )?.let(::appendLog)
     }
@@ -5353,7 +5046,6 @@ class CarPlayHostActivity : ComponentActivity() {
         startupRetryButton?.visibility = View.GONE
         appendLog(reason)
         activeScreenStreamTypes.clear()
-        ClusterActivityOutput.setStreamActive(false)
         setConnectionStage(reason)
         Log.i(TAG, "$reason; rebuilding stack at ${size.width}x${size.height}")
         val generation = ++restartGeneration
@@ -5659,11 +5351,6 @@ class CarPlayHostActivity : ComponentActivity() {
 
     private fun attachSurface(surface: Surface) {
         sink?.setSurface(SCREEN_TYPE_MAIN, surface)
-        if (AirPlayPersistence.loadClusterMapEnabled(this)) {
-            clusterSurface?.let { sink?.setSurface(SCREEN_TYPE_ALT, it) }
-        } else {
-            sink?.setSurface(SCREEN_TYPE_ALT, surface)
-        }
     }
 
     private var lastAudioReclaimAttemptMillis = 0L
@@ -5853,10 +5540,7 @@ class CarPlayHostActivity : ComponentActivity() {
             }
             appendLog("Screen stream state: type=$type active=$active generation=$generation")
             if (type == SCREEN_TYPE_ALT) {
-                Log.i(ClusterMapPresentation.TAG, "cluster stream active=$active")
                 appendLog("Cluster map: stream active=$active")
-                clusterPresentation?.setStreamActive(active)
-                ClusterActivityOutput.setStreamActive(active)
                 MapMirrors.setStreamActive(active)
                 if (active) {
                     mainHandler.removeCallbacks(hideIdleCenterMap)
@@ -5879,6 +5563,7 @@ class CarPlayHostActivity : ComponentActivity() {
     private fun setConnectionStage(message: String, exact: Boolean = false) {
         latestStage = message
         stageStatusView?.text = if (exact) message else friendlyStage(message)
+        paintWaitingScreen()
         stageStartedAtMillis = System.currentTimeMillis()
         val generation = ++stageWatchdogGeneration
         stageDiagnosticView?.text = "阶段已进入 · 0 秒"
@@ -5886,7 +5571,7 @@ class CarPlayHostActivity : ComponentActivity() {
             if (generation != stageWatchdogGeneration || shuttingDown.get()) return
             val elapsed = ((System.currentTimeMillis() - stageStartedAtMillis) / 1000L).coerceAtLeast(0L)
             stageDiagnosticView?.text = if (elapsed >= 20L) {
-                "当前阶段已等待 ${elapsed} 秒 · 若持续不变，请拍摄此界面"
+                "已等待 ${elapsed} 秒 · 请解锁 iPhone，手机弹出「信任/允许 CarPlay」时请点允许；若长期无变化请拍摄此界面"
             } else {
                 "阶段已进入 · ${elapsed} 秒"
             }
@@ -5978,6 +5663,7 @@ class CarPlayHostActivity : ComponentActivity() {
         }
         sessionLog = activeLog
         crashDiagnosticLog = activeLog
+        AsyncDiagnosticLog.defaultTarget = activeLog
     }
 
     /**

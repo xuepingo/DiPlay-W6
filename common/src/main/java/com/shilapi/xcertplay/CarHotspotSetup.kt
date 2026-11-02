@@ -15,7 +15,15 @@ import com.shilapi.xcertplay.orchestration.ManualHotspotValidation
 /** Each grant is requested explicitly from settings; startup never calls this authorization path. */
 internal object CarHotspotSetup {
     // Older BYD units report QUALCOMM/qti and have no supported navigation-output service.
-    fun isBydHeadUnit(context: Context): Boolean = BydOutputSettings.navigationAvailable(context) || runCatching {
+    fun isBydHeadUnit(context: Context): Boolean = BydOutputSettings.navigationAvailable(context) || isBydForceStopHeadUnit(context)
+
+    /**
+     * Strict BYD check: only the vendor's own settings app. Unlike [isBydHeadUnit] this never
+     * matches a head unit that merely carries a navigation-adapter/SOME/IP package (the W6 does),
+     * and it must stay strict because it decides whether removing the task kills the CarPlay
+     * session — only BYD's recents force-stop the package, the W6 leaves the process alive.
+     */
+    fun isBydForceStopHeadUnit(context: Context): Boolean = runCatching {
         context.packageManager.getApplicationInfo("com.byd.carsettings", 0).flags and ApplicationInfo.FLAG_SYSTEM != 0
     }.getOrDefault(false)
 

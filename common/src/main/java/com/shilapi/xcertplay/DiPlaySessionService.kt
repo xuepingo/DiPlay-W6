@@ -27,11 +27,11 @@ class DiPlaySessionService : Service() {
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (realSdkInt() >= Build.VERSION_CODES.O) {
             manager.createNotificationChannel(
-                NotificationChannel(CHANNEL, "CarPlay connection", NotificationManager.IMPORTANCE_LOW),
+                NotificationChannel(CHANNEL, getString(R.string.session_notification_channel), NotificationManager.IMPORTANCE_LOW),
             )
         }
         val pendingFlags = PendingIntent.FLAG_UPDATE_CURRENT or
-            (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0)
+            (if (realSdkInt() >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0)
         val open = PendingIntent.getActivity(this, 0, Intent(this, CarPlayHostActivity::class.java), pendingFlags)
         val stop = PendingIntent.getService(this, 1, Intent(this, DiPlaySessionService::class.java).setAction(ACTION_STOP), pendingFlags)
         val builder = if (realSdkInt() >= Build.VERSION_CODES.O) {
@@ -41,15 +41,15 @@ class DiPlaySessionService : Service() {
             Notification.Builder(this)
         }
         builder
-            .setSmallIcon(if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) R.drawable.ic_diplay_notification else R.drawable.ic_carplay)
-            .setContentTitle("DiPlay")
-            .setContentText("CarPlay connection running")
+            .setSmallIcon(if (realSdkInt() >= Build.VERSION_CODES.LOLLIPOP) R.drawable.ic_diplay_notification else R.drawable.ic_carplay)
+            .setContentTitle(getString(R.string.app_name))
+            .setContentText(getString(R.string.session_notification_text))
             .setContentIntent(open).setOngoing(true)
         if (realSdkInt() >= Build.VERSION_CODES.M) {
-            builder.addAction(Notification.Action.Builder(null, "Disconnect", stop).build())
+            builder.addAction(Notification.Action.Builder(null, getString(R.string.disconnect), stop).build())
         } else {
             @Suppress("DEPRECATION")
-            builder.addAction(0, "Disconnect", stop)
+            builder.addAction(0, getString(R.string.disconnect), stop)
         }
         val notification = builder.build()
         if (realSdkInt() >= 29) {
@@ -68,10 +68,17 @@ class DiPlaySessionService : Service() {
         return START_NOT_STICKY
     }
     override fun onTaskRemoved(rootIntent: Intent?) {
-        // BYD's recents force-stops the package ~10 ms after removing the task: end guidance first.
+        // BYD's recents force-stops the package ~10 ms after removing the task: end guidance first
+        // and stop cleanly before the kill. Other head units (the Weltmeister W6's launcher removes
+        // the task when switching to the car home screen) leave the process alive — the session must
+        // survive there so returning to CarPlay adopts it instead of re-handshaking over USB.
+        // Strict BYD check on purpose: the loose one matches navigation-adapter packages that the
+        // W6 also carries and would kill the session exactly where it must survive.
         com.shilapi.xcertplay.hud.BydNavigationOutputs.endNow()
-        CarPlayBackgroundSession.stop()
-        stopSelf()
+        if (CarHotspotSetup.isBydForceStopHeadUnit(this)) {
+            CarPlayBackgroundSession.stop()
+            stopSelf()
+        }
     }
     companion object {
         const val ACTION_STOP = "com.shihab.diplay.DISCONNECT"

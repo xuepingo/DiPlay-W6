@@ -58,7 +58,7 @@ object AirPlayPersistence {
     private const val KEY_MEDIA_VOLUME_PERCENT = "media_volume_percent"
     private const val KEY_NAVIGATION_VOLUME_PERCENT = "navigation_volume_percent"
     /** Issues #253/#263: selectable per-stream volume steps, in percent. */
-    val STREAM_VOLUME_PERCENTS = listOf(25, 50, 75, 100, 125, 150)
+    val STREAM_VOLUME_PERCENTS = listOf(25, 50, 75, 100, 125, 150, 175, 200, 250, 300)
     private const val KEY_NAVIGATION_AUDIO_CHANNEL = "navigation_audio_channel"
     private const val KEY_NAVIGATION_STREAM_TYPE = "navigation_stream_type"
     private const val KEY_WIRELESS_ENABLED = "wireless_enabled"
@@ -93,6 +93,8 @@ object AirPlayPersistence {
     private const val KEY_DIRECT_SURFACE_VIEW = "direct_surface_view"
     private const val KEY_DIRECT_USBFS_MODE = "direct_usbfs_mode"
     private const val KEY_CLUSTER_MAP = "cluster_map_enabled"
+    private const val KEY_GENERIC_CLUSTER_DISPLAY_ID = "generic_cluster_display_id"
+    private const val KEY_CLUSTER_MUSIC_CARD = "cluster_music_card"
     private const val KEY_ADB_CLUSTER_ACTIVITY = "adb_cluster_activity_enabled"
     private const val KEY_CENTER_MAP_OVERLAY = "center_map_overlay"
     private const val KEY_FLOATING_DOT = "floating_dot"
@@ -132,7 +134,7 @@ object AirPlayPersistence {
 
     const val DEFAULT_MANUFACTURER = "DiPlay"
     const val DEFAULT_MODEL = "DiPlay"
-    const val DEFAULT_OEM_LABEL = "BYD"
+    const val DEFAULT_OEM_LABEL = "威马"
     const val DEFAULT_MFI_I2C_PATH = "/dev/i2c-1"
 
     fun loadAmbientDelaySeconds(context: Context): Int =
@@ -588,6 +590,15 @@ object AirPlayPersistence {
             .getString(KEY_OEM_LABEL, DEFAULT_OEM_LABEL)
             // iOS hides the car icon without a label.
             .orEmpty().ifBlank { DEFAULT_OEM_LABEL }
+            // Migrate the legacy BYD branding away: earlier builds saved "BYD"/"Weltmeister"
+            // and the W6 owner wants the CarPlay tile to say 威马 everywhere.
+            .let { label ->
+                if (label.equals("BYD", ignoreCase = true) || label == "比亚迪" || label == "Weltmeister") {
+                    DEFAULT_OEM_LABEL
+                } else {
+                    label
+                }
+            }
 
     fun saveOemLabel(context: Context, oemLabel: String) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
@@ -827,14 +838,28 @@ object AirPlayPersistence {
     fun loadClusterMapEnabled(context: Context): Boolean =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_CLUSTER_MAP, false)
 
-    fun loadAdbClusterEnabled(context: Context): Boolean = loadClusterMapEnabled(context) &&
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_ADB_CLUSTER_ACTIVITY, false)
+    /**
+     * Display id of a user-picked instrument panel on a head unit DiPlay has no brand route for
+     * (Weltmeister W6 and similar single-SoC cabins), or -1 for the known-head-unit routes only.
+     * Never the default display: that is the centre screen, not the cluster.
+     */
+    fun loadGenericClusterDisplayId(context: Context): Int =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getInt(KEY_GENERIC_CLUSTER_DISPLAY_ID, -1)
 
-    fun saveAdbClusterEnabled(context: Context, enabled: Boolean) {
-        val edit = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-            .putBoolean(KEY_ADB_CLUSTER_ACTIVITY, enabled)
-        if (enabled) edit.putBoolean(KEY_CLUSTER_MAP, true)
-        edit.apply()
+    fun saveGenericClusterDisplayId(context: Context, displayId: Int) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putInt(KEY_GENERIC_CLUSTER_DISPLAY_ID, displayId)
+            .apply()
+    }
+
+    /** The song card DiPlay draws on the dashboard map; on by default for non-BYD clusters. */
+    fun loadClusterMusicCardEnabled(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_CLUSTER_MUSIC_CARD, true)
+
+    fun saveClusterMusicCardEnabled(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putBoolean(KEY_CLUSTER_MUSIC_CARD, enabled)
+            .apply()
     }
 
     fun saveClusterMapEnabled(context: Context, enabled: Boolean) {
@@ -893,7 +918,7 @@ object AirPlayPersistence {
     fun loadClusterContent(context: Context): CarPlayClusterDisplay.Content =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_CLUSTER_CONTENT, null)
             ?.let { name -> CarPlayClusterDisplay.Content.entries.firstOrNull { it.name == name } }
-            ?: if (AdbClusterRouter.enabled(context)) CarPlayClusterDisplay.Content.INSTRUMENTS else CarPlayClusterDisplay.Content.MAP
+            ?: CarPlayClusterDisplay.Content.MAP
 
     fun saveClusterContent(context: Context, content: CarPlayClusterDisplay.Content) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY_CLUSTER_CONTENT, content.name).apply()

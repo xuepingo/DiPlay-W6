@@ -41,6 +41,8 @@
 
 #define LWIP_TCP                        1
 #define TCP_MSS                         1440
+/* Keep TCP_WND <= lwip_ncm_relay.c's BUFFER_SIZE: the relay holds un-delivered
+ * stream bytes before tcp_recved, so a larger window deadlocks a refused pbuf. */
 #define TCP_WND                         (32 * 1024)
 #define TCP_SND_BUF                     (32 * 1024)
 #define TCP_SND_QUEUELEN                64

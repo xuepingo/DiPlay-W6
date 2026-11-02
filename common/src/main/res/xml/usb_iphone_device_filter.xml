@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Apple USB devices (0x05AC) only: iPhone/iAP2 configurations can change product IDs.
+         Bluetooth dongles stay in usb_bt_device_filter.xml on their own trampoline. -->
+    <usb-device vendor-id="1452" />
+</resources>

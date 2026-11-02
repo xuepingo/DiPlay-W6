@@ -45,7 +45,7 @@ internal class HomeScreenMonitor(context: Context, private val onChange: (Boolea
         foregroundListener = listener
 
         // UsageStatsManager poller fallback
-        if (realSdkInt() >= 21 && DiLink51ClusterMonitor.hasAccess(context)) {
+        if (realSdkInt() >= 21 && hasUsageAccess(context)) {
             since = System.currentTimeMillis() - FIRST_LOOK_BACK_MILLIS
             newestTime = 0L
             newestPackage = null
@@ -132,8 +132,20 @@ internal class HomeScreenMonitor(context: Context, private val onChange: (Boolea
             "com.mx.launcher",            // 喵驾桌面
         )
 
+        /** UsageStatsManager access check. */
+        private fun hasUsageAccess(context: Context): Boolean {
+            val appOps = context.getSystemService(Context.APP_OPS_SERVICE) as? android.app.AppOpsManager
+                ?: return false
+            val mode = appOps.checkOpNoThrow(
+                android.app.AppOpsManager.OPSTR_GET_USAGE_STATS,
+                android.os.Process.myUid(),
+                context.packageName,
+            )
+            return mode == android.app.AppOpsManager.MODE_ALLOWED
+        }
+
         // Accessibility alone is not a foreground source: this PR has no service dispatching events.
-        fun hasAccess(context: Context): Boolean = realSdkInt() >= 21 && DiLink51ClusterMonitor.hasAccess(context)
+        fun hasAccess(context: Context): Boolean = realSdkInt() >= 21 && hasUsageAccess(context)
 
         /** Query all launcher packages declared on the system. */
         fun queryHomePackages(context: Context): Set<String> {

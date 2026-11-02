@@ -1,5 +1,6 @@
 package com.shilapi.xcertplay.usbbt
 
+import android.os.SystemClock
 import android.util.Log
 import com.shilapi.xcertplay.usbbt.HciProtocol.IAP2_UUID_BYTES
 import com.shilapi.xcertplay.usbbt.HciProtocol.L2CAP_PSM_SDP
@@ -229,9 +230,10 @@ class SdpClient(
         if (!l2cap.send(ch, request)) {
             return SdpResult.Failed("failed to send SDP request")
         }
-        val deadline = System.currentTimeMillis() + QUERY_TIMEOUT_MS
-        while (System.currentTimeMillis() < deadline && !closed) {
-            val remaining = deadline - System.currentTimeMillis()
+        // Elapsed clock (M8): wall-clock deadlines freeze or storm when NTP corrects the clock.
+        val deadline = SystemClock.elapsedRealtime() + QUERY_TIMEOUT_MS
+        while (SystemClock.elapsedRealtime() < deadline && !closed) {
+            val remaining = deadline - SystemClock.elapsedRealtime()
             val pdu = responses.poll(remaining.coerceAtMost(1_000), TimeUnit.MILLISECONDS)
                 ?: continue
             if (pdu.size >= 7 && pdu[0] == 0x01.toByte() &&

@@ -24,7 +24,7 @@ class NtpClock(private val bindReference: InetAddress? = null) : Closeable {
     private var socket: DatagramSocket? = null
     private var receiver: Thread? = null
     private var sender: Thread? = null
-    private var peer: InetSocketAddress? = null
+    @Volatile private var peer: InetSocketAddress? = null
 
     private var clockOffsetNs = wallClockNtpOffsetNs(System.nanoTime())
     private val delays = DoubleArray(DELAY_WINDOW) { Double.POSITIVE_INFINITY }
@@ -36,6 +36,12 @@ class NtpClock(private val bindReference: InetAddress? = null) : Closeable {
     private var synced = false
 
     fun listen(): Int {
+        // Idempotent (M5): a repeated AirPlay SETUP re-negotiates the timing port, and the old
+        // unconditional check() threw IllegalStateException here — failing the whole session
+        // SETUP with 500 instead of returning the port that is already bound.
+        synchronized(socketLock) {
+            socket?.let { return it.localPort }
+        }
         check(!running.getAndSet(true)) { "NtpClock is already running" }
         val bound = AirPlaySocketBinder.datagram(bindReference, "AirPlay timing")
         synchronized(socketLock) { socket = bound }
@@ -47,7 +53,11 @@ class NtpClock(private val bindReference: InetAddress? = null) : Closeable {
         require(port > 0) { "timing port must be positive" }
         // Link-local peers need the interface scope id or UDP sends fail on strict vendor kernels.
         peer = InetSocketAddress(AirPlaySocketBinder.scopedLinkLocal(peerAddress), port)
-        sender = Thread(::runSender, "airplay-ntp-tx").apply { isDaemon = true; start() }
+        synchronized(socketLock) {
+            // Idempotent: the running sender follows the updated peer instead of leaking a thread.
+            if (sender != null) return
+            sender = Thread(::runSender, "airplay-ntp-tx").apply { isDaemon = true; start() }
+        }
     }
 
     /** Now in the phone's synchronized clock domain, as an unsigned NTP64 value. */
@@ -102,7 +112,14 @@ class NtpClock(private val bindReference: InetAddress? = null) : Closeable {
             try {
                 sock.receive(packet)
             } catch (_: Exception) {
-                if (running.get()) continue else return
+                if (!running.get()) return
+                // Back off instead of spinning on a persistently failing socket.
+                try {
+                    Thread.sleep(20)
+                } catch (_: InterruptedException) {
+                    return
+                }
+                continue
             }
             val message = packet.data.copyOf(packet.length)
             val address = packet.address

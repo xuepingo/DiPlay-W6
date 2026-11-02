@@ -445,7 +445,7 @@ class CarPlayHostSettingsTest {
 
     @Test fun carBrandSelectionSyncsOemLabelAndSurvivesSaveAndReconnect() {
         invoke("openSettingsMenu")
-        val preset = CarBrandPresets.ALL.first { it.id == "toyota" }
+        val preset = CarBrandPresets.ALL.first { it.id == "weltmeister" }
         val bytes = preset.loadBytes(activity)!!
         AirPlayPersistence.saveCustomAirPlayIcon(activity, bytes)
         AirPlayPersistence.saveOemLabel(activity, preset.defaultOemName)

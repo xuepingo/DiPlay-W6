@@ -20,6 +20,7 @@ class NightModeResourcesTest {
     }
 
     @Test fun customSettingsFollowEverySupportedResourceLocale() {
+        // Every shipped language pack must carry the custom night-mode settings copy.
         val expected = mapOf("en" to "Transition delay", "zh-CN" to "切换延迟",
             "ar" to "تأخير التبديل", "ru" to "Задержка переключения",
             "es" to "Retardo de cambio", "uk" to "Затримка перемикання")

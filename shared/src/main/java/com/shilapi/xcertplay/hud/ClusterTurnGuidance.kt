@@ -10,10 +10,4 @@ data class ClusterTurnGuidance(
     val arrivalEpochSeconds: Long? = null,
     val remainingSeconds: Long? = null,
     val remainingMeters: Long? = null,
-) {
-    companion object {
-        internal fun from(frame: BydClusterFrame): ClusterTurnGuidance {
-            return ClusterTurnGuidance(frame.icon, frame.roundaboutExit, frame.distanceMeters, frame.road)
-        }
-    }
-}
+)

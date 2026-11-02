@@ -48,6 +48,24 @@ internal object LegacyUsbHostCompat {
         return errno
     }
 
+    /** Same port reset for a caller that owns a plain framework connection. */
+    fun resetDevice(connection: UsbDeviceConnection, onDiagnostic: (String) -> Unit = {}): Int? {
+        val fd = runCatching { connection.fileDescriptor }.getOrDefault(-1)
+        if (fd < 0) {
+            Log.w(TAG, "usbfs reset unavailable: invalid device fd")
+            return null
+        }
+        val errno = try {
+            LegacyUsbHostNative.resetDevice(fd)
+        } catch (error: LinkageError) {
+            Log.w(TAG, "usbfs reset unavailable", error)
+            return null
+        }
+        Log.i(TAG, "usbfs reset device errno=$errno")
+        onDiagnostic("usb device reset requested errno=$errno")
+        return errno
+    }
+
     fun activeConfiguration(connection: SharedUsbConnection): Int? {
         val value = ByteArray(1)
         val read = runCatching {

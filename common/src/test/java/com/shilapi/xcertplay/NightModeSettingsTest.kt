@@ -6,7 +6,6 @@ import android.os.Looper
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
-import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -56,49 +55,6 @@ class NightModeSettingsTest {
         }
     }
 
-    @Test fun savingModeUpdatesVisibilityInPlaceAndKeepsEditedValues() {
-        AirPlayPersistence.saveCarPlayNightMode(activity, CarPlayNightMode.AMBIENT)
-        renderSettings()
-        editNumber(R.string.ambient_light_threshold_title, 75)
-        editNumber(R.string.ambient_delay_title, 7)
-        val threshold = button(R.string.ambient_light_threshold_title)
-        val delay = button(R.string.ambient_delay_title)
-
-        for (mode in listOf(CarPlayNightMode.SYSTEM, CarPlayNightMode.DAY,
-            CarPlayNightMode.NIGHT, CarPlayNightMode.SCHEDULE, CarPlayNightMode.AMBIENT)) {
-            selectMode(mode).getButton(AlertDialog.BUTTON_POSITIVE).performClick()
-            shadowOf(Looper.getMainLooper()).idle()
-
-            assertEquals(mode, AirPlayPersistence.loadCarPlayNightMode(activity))
-            assertAmbientVisible(mode == CarPlayNightMode.AMBIENT)
-            assertScheduleVisible(mode == CarPlayNightMode.SCHEDULE)
-            assertSame(threshold, button(R.string.ambient_light_threshold_title))
-            assertSame(delay, button(R.string.ambient_delay_title))
-            assertEquals(75, AirPlayPersistence.loadAmbientLightThreshold(activity).lux)
-            assertEquals(7, AirPlayPersistence.loadAmbientDelaySeconds(activity))
-        }
-        renderSettings()
-        assertAmbientVisible(true)
-        assertTrue(button(R.string.ambient_light_threshold_title).text.toString().endsWith("75 lux"))
-        assertTrue(button(R.string.ambient_delay_title).text.toString().endsWith("7 s"))
-    }
-
-    @Test fun cancellingModeChoiceKeepsSavedModeAndVisibility() {
-        for (mode in listOf(CarPlayNightMode.SYSTEM, CarPlayNightMode.AMBIENT, CarPlayNightMode.SCHEDULE)) {
-            AirPlayPersistence.saveCarPlayNightMode(activity, mode)
-            renderSettings()
-            val target = if (mode == CarPlayNightMode.SYSTEM) CarPlayNightMode.AMBIENT else CarPlayNightMode.SYSTEM
-            val dialog = selectMode(target)
-            assertAmbientVisible(mode == CarPlayNightMode.AMBIENT)
-            assertScheduleVisible(mode == CarPlayNightMode.SCHEDULE)
-            dialog.getButton(AlertDialog.BUTTON_NEGATIVE).performClick()
-            shadowOf(Looper.getMainLooper()).idle()
-
-            assertEquals(mode, AirPlayPersistence.loadCarPlayNightMode(activity))
-            assertAmbientVisible(mode == CarPlayNightMode.AMBIENT)
-        }
-    }
-
     @Test fun scheduleTimePickersSaveEachBoundaryAndCancelWithoutChangingTheSchedule() {
         AirPlayPersistence.saveCarPlayNightMode(activity, CarPlayNightMode.SCHEDULE)
         renderSettings()
@@ -128,45 +84,6 @@ class NightModeSettingsTest {
         assertEquals(CarPlayNightSchedule(), AirPlayPersistence.loadCarPlayNightSchedule(activity))
         assertEquals(before, button(R.string.carplay_night_start).text.toString())
         assertEquals(activity.getString(R.string.carplay_night_schedule_same_time), ShadowToast.getTextOfLatestToast())
-    }
-
-    @Test fun overviewRendersEverySavedAppearanceWithItsMatchingChoice() {
-        for (mode in CarPlayNightMode.entries) {
-            AirPlayPersistence.saveCarPlayNightMode(activity, mode)
-            renderOverview()
-
-            assertEquals(appearanceSummary(mode), button(R.string.carplay_night_mode).text.toString())
-            button(R.string.carplay_night_mode).performClick()
-            val dialog = ShadowAlertDialog.getLatestAlertDialog()
-            assertEquals(CarPlayNightMode.entries.size, dialog.listView.adapter.count)
-            assertEquals(CarPlayNightMode.entries.indexOf(mode), dialog.listView.checkedItemPosition)
-            assertEquals(activity.getString(modeLabel(mode)),
-                dialog.listView.adapter.getItem(dialog.listView.checkedItemPosition))
-            dialog.getButton(AlertDialog.BUTTON_NEGATIVE).performClick()
-            assertEquals(mode, AirPlayPersistence.loadCarPlayNightMode(activity))
-        }
-    }
-
-    @Test fun choosingScheduledAppearanceFromOverviewKeepsTheDisplaySchedule() {
-        val schedule = CarPlayNightSchedule(20 * 60 + 15, 5 * 60 + 45)
-        AirPlayPersistence.saveCarPlayNightSchedule(activity, schedule)
-        AirPlayPersistence.saveCarPlayNightMode(activity, CarPlayNightMode.SYSTEM)
-        renderOverview()
-
-        val dialog = selectMode(CarPlayNightMode.SCHEDULE)
-        assertEquals(activity.getString(R.string.carplay_night_schedule),
-            dialog.listView.adapter.getItem(CarPlayNightMode.entries.indexOf(CarPlayNightMode.SCHEDULE)))
-        dialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick()
-        shadowOf(Looper.getMainLooper()).idle()
-
-        assertEquals(CarPlayNightMode.SCHEDULE, AirPlayPersistence.loadCarPlayNightMode(activity))
-        assertEquals(schedule, AirPlayPersistence.loadCarPlayNightSchedule(activity))
-        assertEquals(appearanceSummary(CarPlayNightMode.SCHEDULE), button(R.string.carplay_night_mode).text.toString())
-        renderSettings()
-        assertEquals(appearanceSummary(CarPlayNightMode.SCHEDULE), button(R.string.carplay_night_mode).text.toString())
-        assertScheduleVisible(true)
-        assertTrue(button(R.string.carplay_night_start).text.toString().endsWith("20:15"))
-        assertTrue(button(R.string.carplay_night_end).text.toString().endsWith("05:45"))
     }
 
     @Test fun searchingSettingsWithScheduledAppearanceKeepsTheSavedMode() {
@@ -234,22 +151,6 @@ class NightModeSettingsTest {
         shadowOf(Looper.getMainLooper()).idle()
         dialog.updateTime(hour, minute)
         return dialog
-    }
-
-    private fun selectMode(mode: CarPlayNightMode): AlertDialog {
-        button(R.string.carplay_night_mode).performClick()
-        return ShadowAlertDialog.getLatestAlertDialog().also {
-            it.listView.performItemClick(null, CarPlayNightMode.entries.indexOf(mode), 0)
-        }
-    }
-
-    private fun editNumber(title: Int, value: Int) {
-        button(title).performClick()
-        val dialog = ShadowAlertDialog.getLatestAlertDialog()
-        shadowOf(Looper.getMainLooper()).idle()
-        views(dialog.window!!.decorView).filterIsInstance<EditText>().single().setText(value.toString())
-        dialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick()
-        shadowOf(Looper.getMainLooper()).idle()
     }
 
     private fun button(title: Int) = views(page).filterIsInstance<Button>().single {

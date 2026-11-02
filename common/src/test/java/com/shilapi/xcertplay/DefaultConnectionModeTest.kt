@@ -1,6 +1,5 @@
 package com.shilapi.xcertplay
 
-import android.app.AlertDialog
 import android.content.Intent
 import android.os.Looper
 import android.view.View
@@ -19,7 +18,6 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
-import org.robolectric.shadows.ShadowAlertDialog
 import org.robolectric.annotation.LooperMode
 import org.robolectric.util.ReflectionHelpers
 
@@ -120,16 +118,14 @@ class DefaultConnectionModeTest {
             it.text.toString().startsWith(activity.getString(R.string.default_connection_mode) + " · ")
         }
         button.performClick()
-        var dialog = ShadowAlertDialog.getLatestAlertDialog()
-        dialog.listView.performItemClick(null, 2, 0)
-        dialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick()
+        var dialog = requireNotNull(UiDialogs.lastLeash)
+        dialog.clickOption(2) // A row tap applies the choice immediately.
         shadowOf(Looper.getMainLooper()).idle()
         assertEquals(DefaultConnectionMode.USB, DiPlayPreferences.defaultConnectionMode(app))
         assertTrue(button.text.toString().endsWith(activity.getString(R.string.default_connection_usb)))
         button.performClick()
-        dialog = ShadowAlertDialog.getLatestAlertDialog()
-        dialog.listView.performItemClick(null, 1, 0)
-        dialog.getButton(AlertDialog.BUTTON_NEGATIVE).performClick()
+        dialog = requireNotNull(UiDialogs.lastLeash)
+        dialog.clickNegative() // Cancelling without picking keeps the saved default.
         shadowOf(Looper.getMainLooper()).idle()
         assertEquals(DefaultConnectionMode.USB, DiPlayPreferences.defaultConnectionMode(app))
         assertFalse(DiPlayPreferences.autoConnect(app))

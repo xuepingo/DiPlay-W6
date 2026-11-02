@@ -85,10 +85,12 @@ class SmoothVideoHostLifecycleTest {
         controllerConstruction.close()
     }
 
-    // (1) The maintainer's sequence: Smooth video turned on, the reconnect stopped at a prerequisite, so
-    // the old host still runs a session whose sink does not pace. A new host built with smooth video must
-    // stop that session, not adopt it, and then start its own.
-    @Test fun aNewSmoothHostStopsANonPacingBackgroundSessionOnceAndThenStartsItsOwn() {
+    // (1) The W6 launcher-return sequence (稳定版 11): the old host's session outlives a trip to
+    // the car launcher, and its sink pacing is fixed when it is built. A new host must adopt the
+    // session and sync its view to the sink's pacing instead of stopping it — a stop here forced a
+    // full USB re-handshake on every launcher return ("adopt 的 pacing 不匹配从「停掉重连」改为
+    // 「同步视图到 sink」"). The next fresh start honours the Smooth video setting again.
+    @Test fun aNewHostAdoptsANonPacingBackgroundSessionAndSyncsItsViewInsteadOfStoppingIt() {
         AirPlayPersistence.saveSmoothVideo(activity, true)
         setField("smoothVideo", true)
         allowStartup()
@@ -97,30 +99,12 @@ class SmoothVideoHostLifecycleTest {
         val stop = DeferredStop()
         CarPlayBackgroundSession.store(oldController, oldSink, 1920, 990, Any(), display, stop::invoke)
 
-        assertEquals(false, invoke("adoptBackgroundSession"))
-        assertNull("A non-pacing sink must not be adopted by a smooth video view", getField("sink"))
-        assertNull(getField("controller"))
-        assertEquals(1, stop.calls)
-
-        // The non-owner path polls every 500 ms while the other host is still stopping.
-        invoke("maybeStartCarPlay")
-        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(2_100))
-        assertEquals("One stop request per retained session, however often the host retries", 1, stop.calls)
-        assertNull(getField("sink"))
-        assertNull(getField("controller"))
+        assertEquals(true, invoke("adoptBackgroundSession"))
+        assertSame("The live session is adopted, not restarted", oldSink, getField("sink"))
+        assertSame(oldController, getField("controller"))
+        assertEquals("The view syncs to the adopted sink's pacing", false, getField("smoothVideo"))
+        assertEquals("An adopted session must never be stopped", 0, stop.calls)
         assertTrue(CarPlayBackgroundSession.hasSession())
-
-        // The old host finishes its shutdown (which clears the slot) and completes the stop.
-        stop.complete()
-        shadowOf(Looper.getMainLooper()).idle()
-
-        val started = getField("sink") as? AndroidMediaSink
-        assertNotNull("Once the old session stops, this host starts its own", started)
-        assertNotSame(oldSink, started)
-        assertTrue("The new session paces, matching this host's view", started!!.videoPacingEnabled)
-        assertNotNull(getField("controller"))
-        assertNotSame(oldController, getField("controller"))
-        assertEquals(1, stop.calls)
     }
 
     @Test fun aBackgroundSessionWhosePacingMatchesTheViewIsAdopted() {

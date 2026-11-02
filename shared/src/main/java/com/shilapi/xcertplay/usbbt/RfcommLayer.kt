@@ -1,5 +1,6 @@
 package com.shilapi.xcertplay.usbbt
 
+import android.os.SystemClock
 import android.util.Log
 import com.shilapi.xcertplay.usbbt.HciProtocol.L2CAP_PSM_RFCOMM
 import com.shilapi.xcertplay.usbbt.HciProtocol.RFCOMM_DLCI_CONTROL
@@ -116,10 +117,11 @@ class RfcommLayer(
 
         fun takeTxCredit(timeoutMs: Long = 1000L): Boolean {
             if (!creditBased) return true
-            val deadline = System.currentTimeMillis() + timeoutMs
+            // Elapsed clock (M8): wall-clock deadlines freeze or storm when NTP corrects the clock.
+            val deadline = SystemClock.elapsedRealtime() + timeoutMs
             synchronized(lock) {
                 while (txCredits <= 0) {
-                    val wait = deadline - System.currentTimeMillis()
+                    val wait = deadline - SystemClock.elapsedRealtime()
                     if (wait <= 0) return false
                     try {
                         lock.wait(wait)

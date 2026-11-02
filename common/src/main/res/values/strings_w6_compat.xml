@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="generic_cluster_display">Cluster display (experimental)</string>
+    <string name="generic_cluster_display_auto">Auto (known head units only)</string>
+    <string name="generic_cluster_display_left_half">Instrument: left half of the main display (experimental)</string>
+</resources>

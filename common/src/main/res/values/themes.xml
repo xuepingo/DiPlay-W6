@@ -3,6 +3,14 @@
         <item name="android:fontFamily">sans</item>
         <item name="android:windowBackground">#0C111B</item>
         <item name="android:windowActionModeOverlay">true</item>
+        <item name="android:alertDialogTheme">@style/Dialog.Xcertplay</item>
+    </style>
+    <style name="Dialog.Xcertplay" parent="android:style/Theme.Holo.Dialog">
+        <item name="android:textColorPrimary">#F2F4F8</item>
+        <item name="android:textColorSecondary">#B8BFC9</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:background">#1C2430</item>
+        <item name="android:textColor">#F2F4F8</item>
     </style>
     <style name="Theme.AdbCluster" parent="android:style/Theme.Holo.NoActionBar">
         <item name="android:windowIsTranslucent">true</item>

@@ -1,5 +1,4 @@
 package com.shilapi.xcertplay
-import android.app.AlertDialog
 import android.view.View
 import android.view.ViewGroup
 import android.widget.*
@@ -9,7 +8,6 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
-import org.robolectric.shadows.ShadowAlertDialog
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
@@ -32,7 +30,7 @@ class NightModeDialogsTest {
             0..60, 2, R.string.ambient_delay_summary, { 13 }, false, { _: Int -> })
         for (index in listOf(0,2)) {
             parent.getChildAt(index).performClick()
-            val d = ShadowAlertDialog.getLatestAlertDialog()
+            val d = requireNotNull(UiDialogs.lastLeash).dialog
             val decor = d.window!!.decorView
             fun measure(): Int {
                 fun force(v: View) {
@@ -59,7 +57,7 @@ class NightModeDialogsTest {
                 (input.parent as View).layoutParams.height)
             assertEquals(ViewGroup.LayoutParams.WRAP_CONTENT, d.window!!.attributes.height)
             val before = measure()
-            d.getButton(AlertDialog.BUTTON_NEUTRAL).performClick()
+            requireNotNull(UiDialogs.lastLeash).clickNeutral()
             assertEquals("dialog $index reset must not change height",before,measure())
             d.dismiss()
         }

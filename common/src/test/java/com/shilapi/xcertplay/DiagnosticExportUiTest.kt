@@ -16,7 +16,6 @@ import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
-import org.robolectric.shadows.ShadowAlertDialog
 import org.robolectric.shadows.ShadowContentResolver
 import org.robolectric.util.ReflectionHelpers
 import java.io.File
@@ -40,25 +39,26 @@ class DiagnosticExportUiTest {
         }
         ReflectionHelpers.setField(activity, "export", missingPicker)
         try {
+            UiDialogs.lastLeash = null
             ReflectionHelpers.callInstanceMethod<Unit>(activity, "chooseReportDestination")
             val deadline = System.nanoTime() + 5_000_000_000L
-            while (ShadowAlertDialog.getLatestAlertDialog() == null && System.nanoTime() < deadline) {
+            while (UiDialogs.lastLeash == null && System.nanoTime() < deadline) {
                 Thread.sleep(20)
                 shadowOf(Looper.getMainLooper()).idle()
             }
-            val saved = requireNotNull(ShadowAlertDialog.getLatestAlertDialog())
+            val saved = requireNotNull(UiDialogs.lastLeash)
             val reports = File(context.getExternalFilesDir(null)!!, "diagnostic-reports")
             val file = reports.listFiles()!!.single()
             assertTrue(file.name.endsWith(".txt"))
-            assertTrue(descendants(saved.window!!.decorView).filterIsInstance<TextView>()
+            assertTrue(descendants(saved.dialog.window!!.decorView).filterIsInstance<TextView>()
                 .any { it.text.contains(file.absolutePath) })
             assertTrue(file.readText().contains("Android 9 / API 28"))
-            saved.getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick()
+            saved.clickPositive()
             shadowOf(Looper.getMainLooper()).idle()
-            val viewer = ShadowAlertDialog.getLatestAlertDialog()
-            assertTrue(descendants(viewer.window!!.decorView).filterIsInstance<TextView>()
+            val viewer = requireNotNull(UiDialogs.lastLeash)
+            assertTrue(descendants(viewer.dialog.window!!.decorView).filterIsInstance<TextView>()
                 .any { it.text.contains("Android 9 / API 28") })
-            viewer.dismiss()
+            viewer.dialog.dismiss()
         } finally {
             controller.pause().stop().destroy()
         }

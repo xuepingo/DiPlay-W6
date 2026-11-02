@@ -1,7 +1,6 @@
 package com.shilapi.xcertplay
 
 import android.app.Activity
-import android.app.AlertDialog
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -68,15 +67,17 @@ internal class HotspotJoinControls(private val activity: Activity, private val s
     private fun confirm(action: HotspotJoinRepair.Action) {
         if (busy || closed) return
         if (sessionActive()) {
-            AlertDialog.Builder(activity).setMessage(R.string.hotspot_join_disconnect)
-                .setPositiveButton(android.R.string.ok, null).show()
+            UiDialogs.message(activity, "", activity.getString(R.string.hotspot_join_disconnect),
+                activity.getString(android.R.string.ok))
             return
         }
-        AlertDialog.Builder(activity).setTitle(if (action == HotspotJoinRepair.Action.APPLY)
-            R.string.hotspot_join_apply else R.string.hotspot_join_restore)
-            .setMessage(R.string.hotspot_join_confirm)
-            .setPositiveButton(android.R.string.ok) { _, _ -> run(action) }
-            .setNegativeButton(R.string.cancel, null).show()
+        UiDialogs.confirm(activity,
+            activity.getString(if (action == HotspotJoinRepair.Action.APPLY)
+                R.string.hotspot_join_apply else R.string.hotspot_join_restore),
+            activity.getString(R.string.hotspot_join_confirm),
+            positive = activity.getString(android.R.string.ok),
+            negative = activity.getString(R.string.cancel),
+        ) { run(action) }
     }
 
     private fun run(action: HotspotJoinRepair.Action) {

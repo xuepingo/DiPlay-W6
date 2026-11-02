@@ -29,7 +29,15 @@
 
 #define MAX_RELAY_CONNS 32
 #define MAX_UDP_RELAYS 32
-#define BUFFER_SIZE 16384
+/*
+ * Must stay >= TCP_WND (lwipopts.h). tcp_relay_recv keeps undrained bytes here without
+ * calling tcp_recved, so un-delivered data (this buffer plus any refused pbuf) is always
+ * bounded by the TCP window. A smaller buffer makes a window-sized burst refuse forever:
+ * the pbuf can never fit, the window never reopens, and the iPhone's video stream stalls
+ * at the CarPlay desktop until the sender gives up (seen on Weltmeister W6 / Android 9).
+ */
+#define BUFFER_SIZE 32768
+_Static_assert(BUFFER_SIZE >= TCP_WND, "BUFFER_SIZE must cover TCP_WND so refused pbufs always fit");
 
 // NO_SYS lwIP owns process-global heaps, PCB lists and cyclic timers.
 // Reinitializing those globals for another USB session corrupts next_timeout.
@@ -45,6 +53,8 @@ typedef struct {
     int loopback_to_lwip_len;
     uint8_t lwip_to_loopback_buf[BUFFER_SIZE];
     int lwip_to_loopback_len;
+    /** Backpressure refusals on this relay; aggregated into the native snapshot. */
+    uint32_t refused_pbufs;
 } TcpRelayConn;
 
 typedef struct {
@@ -312,7 +322,12 @@ static err_t tcp_relay_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err
 
     // Never wait for a slow local reader while holding the global NO_SYS core
     // lock. Keep bounded data and let the worker forward it nonblockingly.
-    if (p->tot_len > BUFFER_SIZE - conn->lwip_to_loopback_len) return ERR_MEM;
+    // With BUFFER_SIZE >= TCP_WND this refuse path is unreachable; keep it as a
+    // counted safety net so a field report can still show lingering backpressure.
+    if (p->tot_len > BUFFER_SIZE - conn->lwip_to_loopback_len) {
+        conn->refused_pbufs++;
+        return ERR_MEM;
+    }
     pbuf_copy_partial(p, conn->lwip_to_loopback_buf + conn->lwip_to_loopback_len, p->tot_len, 0);
     conn->lwip_to_loopback_len += p->tot_len;
     pbuf_free(p);
@@ -361,12 +376,21 @@ static err_t tcp_relay_accept(void *arg, struct tcp_pcb *newpcb, err_t err) {
 
     int flags = fcntl(fd, F_GETFL, 0);
     fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    // Deep loopback buffers: the AirPlay video reader wants bursts of whole frames
+    // without backpressuring the lwIP relay (which would stall the iPhone's sender).
+    {
+        int rcvbuf = 256 * 1024;
+        int sndbuf = 256 * 1024;
+        setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
+        setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
+    }
 
     conn->active = 1;
     conn->lwip_pcb = newpcb;
     conn->loopback_fd = fd;
     conn->loopback_to_lwip_len = 0;
     conn->lwip_to_loopback_len = 0;
+    conn->refused_pbufs = 0;
     ctx->stats_tcp_conns_accepted++;
 
     tcp_arg(newpcb, conn);
@@ -831,11 +855,15 @@ Java_com_shilapi_xcertplay_network_LwipNcmNative_nativeGetSnapshot(
     }
 
     char buf[512];
+    unsigned int refused_total = 0;
+    for (int i = 0; i < MAX_RELAY_CONNS; i++) {
+        refused_total += ctx->tcp_conns[i].refused_pbufs;
+    }
     snprintf(buf, sizeof(buf),
-             "listeners=%d tcp_act=%d (accepted=%u closed=%u) udp_relays=%d "
+             "listeners=%d tcp_act=%d (accepted=%u closed=%u refused=%u) udp_relays=%d "
              "rx_frames=%u (tcp=%u syn=%u udp=%u icmp6=%u drop=%u) tx_frames=%u tx_bytes=%u",
              ctx->num_listen_pcbs,
-             active_tcp, ctx->stats_tcp_conns_accepted, ctx->stats_tcp_conns_closed,
+             active_tcp, ctx->stats_tcp_conns_accepted, ctx->stats_tcp_conns_closed, refused_total,
              active_udp,
              ctx->stats_rx_frames, ctx->stats_rx_tcp, ctx->stats_rx_tcp_syn,
              ctx->stats_rx_udp, ctx->stats_rx_icmp6, ctx->stats_rx_drops,

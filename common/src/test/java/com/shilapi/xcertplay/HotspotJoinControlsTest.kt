@@ -1,6 +1,5 @@
 package com.shilapi.xcertplay
 
-import android.app.AlertDialog
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
@@ -14,7 +13,6 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows.shadowOf
 import android.os.Looper
 import org.robolectric.annotation.Config
-import org.robolectric.shadows.ShadowAlertDialog
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [33], qualifiers = "en", manifest = Config.NONE)
@@ -48,11 +46,11 @@ class HotspotJoinControlsTest {
         button(R.string.hotspot_join_check).performClick()
         assertEquals(listOf(HotspotJoinRepair.Action.CHECK), backend.actions)
         button(R.string.hotspot_join_apply).performClick()
-        ShadowAlertDialog.getLatestAlertDialog().getButton(AlertDialog.BUTTON_NEGATIVE).performClick()
+        UiDialogs.lastLeash!!.clickNegative()
         shadowOf(Looper.getMainLooper()).idle()
         assertEquals(1, backend.actions.size)
         button(R.string.hotspot_join_apply).performClick()
-        ShadowAlertDialog.getLatestAlertDialog().getButton(AlertDialog.BUTTON_POSITIVE).performClick()
+        UiDialogs.lastLeash!!.clickPositive()
         shadowOf(Looper.getMainLooper()).idle()
         assertEquals(listOf(HotspotJoinRepair.Action.CHECK, HotspotJoinRepair.Action.APPLY), backend.actions)
         assertTrue(views(root).filterIsInstance<Button>().any { it.text == activity.getString(R.string.hotspot_join_restore) })
@@ -84,7 +82,7 @@ class HotspotJoinControlsTest {
         button(R.string.hotspot_join_check).performClick()
         button(R.string.hotspot_join_apply).performClick()
         backend.session = true
-        ShadowAlertDialog.getLatestAlertDialog().getButton(AlertDialog.BUTTON_POSITIVE).performClick()
+        UiDialogs.lastLeash!!.clickPositive()
         shadowOf(Looper.getMainLooper()).idle()
         assertEquals(listOf(HotspotJoinRepair.Action.CHECK), backend.actions)
         controls.close()
@@ -104,11 +102,11 @@ class HotspotJoinControlsTest {
         assertSame(worker, backend.queued)
         backend.deferred = false; worker!!.invoke()
         button(R.string.hotspot_join_apply).performClick()
-        ShadowAlertDialog.getLatestAlertDialog().getButton(AlertDialog.BUTTON_POSITIVE).performClick()
+        UiDialogs.lastLeash!!.clickPositive()
         shadowOf(Looper.getMainLooper()).idle()
         button(R.string.hotspot_join_restore).performClick()
         assertEquals(2, backend.actions.size)
-        ShadowAlertDialog.getLatestAlertDialog().getButton(AlertDialog.BUTTON_POSITIVE).performClick()
+        UiDialogs.lastLeash!!.clickPositive()
         shadowOf(Looper.getMainLooper()).idle()
         assertEquals(HotspotJoinRepair.Action.RESTORE, backend.actions.last())
         assertFalse(views(root).filterIsInstance<Button>().any { it.text == activity.getString(R.string.hotspot_join_restore) })

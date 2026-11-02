@@ -35,6 +35,7 @@ internal class BufferedAudioStream(
     private val closed = AtomicBoolean(false)
     private val started = AtomicBoolean(false)
     private var cleanupStarted = false // guarded by lock; permits reentrant close without recursion
+    private var cleanupThread: Thread? = null // guarded by lock; who runs the out-of-lock sink cleanup
     @Volatile internal var outputCleanupComplete = false
         private set
     private val server = ServerSocket(0)
@@ -52,6 +53,7 @@ internal class BufferedAudioStream(
     // Playback state, guarded by [lock].
     private var rate = 0
     private var flushUntil: Long? = null
+    private var flushUntilSetAt = 0L // nanoTime() when the flush mark was raised
     private var anchorRtp: Long? = null
     private var anchorNtp: BigInteger? = null
     private var feedStartTimestamp: Long? = null
@@ -104,6 +106,7 @@ internal class BufferedAudioStream(
                 }
                 if (frame.rtp.size <= RTP_HEADER) continue
                 synchronized(lock) {
+                    expireFlushUntilLocked()
                     while (!closed.get() &&
                         flushUntil?.let { before(frame.timestamp, it) } != true &&
                         (queuedBytes + frame.rtp.size > AUDIO_BUFFER_BYTES || queue.size + fed.size >= maxBufferedFrames)) {
@@ -113,6 +116,8 @@ internal class BufferedAudioStream(
                     }
                     if (closed.get()) return
                     if (flushUntil?.let { before(frame.timestamp, it) } == true) return@synchronized
+                    // TCP delivers in order: the flush mark is behind the live edge now.
+                    flushUntil = null
                     queue.addLast(frame)
                     queuedBytes += frame.rtp.size
                     lock.notifyAll()
@@ -259,10 +264,23 @@ internal class BufferedAudioStream(
 
     private fun dropBeforeLocked(timestamp: Long) {
         flushUntil = timestamp
+        flushUntilSetAt = nanoTime()
         while (queue.peekFirst()?.let { before(it.timestamp, timestamp) } == true) {
             queuedBytes -= queue.pollFirst()!!.rtp.size
         }
         lock.notifyAll()
+    }
+
+    /**
+     * A flush mark only exists to drop the backlog right after a SETRATE anchor. Kept alive
+     * forever it mis-classifies frames once the U32 RTP clock wraps (~25 h at 48 kHz): half a
+     * wrap past the mark [before] reports every new frame as older and playback goes silent
+     * (long-drive case). Age the mark out well before that can happen.
+     */
+    private fun expireFlushUntilLocked() {
+        if (flushUntil != null && nanoTime() - flushUntilSetAt > FLUSH_MARK_TTL_NS) {
+            flushUntil = null
+        }
     }
 
     private fun retireFedLocked() {
@@ -292,22 +310,59 @@ internal class BufferedAudioStream(
     override fun close() {
         closed.set(true)
         runCatching { server.close() }
+        var firstCloser = false
+        var needsSinkCleanup = false
         synchronized(lock) {
-            // A second external closer must wait for the first one's sink cleanup, rather
-            // than return just because closed was set while a delivery callback was active.
-            if (cleanupStarted) return
-            cleanupStarted = true
-            try {
+            if (!cleanupStarted) {
+                firstCloser = true
+                cleanupStarted = true
+                cleanupThread = Thread.currentThread()
                 runCatching { client?.close() }
                 client = null
                 queue.clear()
                 fed.clear()
                 queuedBytes = 0
                 rate = 0
-                restartOutputLocked()
+                // Fence in-flight deliveries under the lock first: the sink cleanup below
+                // must never interleave with a feed callback and nothing may follow it.
+                outputGeneration++
+                needsSinkCleanup = feedStartTimestamp != null
+                feedStartTimestamp = null
+                fedSamples = 0
+            }
+        }
+        if (firstCloser) {
+            try {
+                if (needsSinkCleanup) {
+                    // M9: deliberately outside our own lock — sink cleanup (AudioTrack.release)
+                    // can block for hundreds of milliseconds, and holding the lock here froze
+                    // the feed and control threads (and would deadlock a sink that ever called
+                    // back into this stream). The fence above already ordered this after any
+                    // in-flight delivery.
+                    runCatching { sink.onAudioStopped(id) }
+                        .onFailure { log("Buffered audio: output cleanup failed (${it.javaClass.simpleName})") }
+                }
             } finally {
-                outputCleanupComplete = true
-                lock.notifyAll()
+                synchronized(lock) {
+                    cleanupThread = null
+                    outputCleanupComplete = true
+                    lock.notifyAll()
+                }
+            }
+        } else {
+            // A second external closer waits for the first one's sink cleanup, rather than
+            // returning while the sink is still torn down. A reentrant close from inside a
+            // sink callback returns at once: it is already inside the cleanup.
+            synchronized(lock) {
+                if (cleanupThread === Thread.currentThread()) return
+                while (!outputCleanupComplete) {
+                    try {
+                        lock.wait()
+                    } catch (_: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                        return
+                    }
+                }
             }
         }
     }
@@ -315,6 +370,8 @@ internal class BufferedAudioStream(
     companion object {
         private const val TAG = "xcertplay-usb"
         const val STREAM_TYPE = 103
+        /** A flush backlog drains in well under this; see expireFlushUntilLocked. */
+        private const val FLUSH_MARK_TTL_NS = 30_000_000_000L
         /** Advertised and locally enforced; a full buffer applies TCP backpressure. */
         const val AUDIO_BUFFER_BYTES = 8 * 1024 * 1024
         private const val MAX_BUFFER_MILLIS = 120_000L
