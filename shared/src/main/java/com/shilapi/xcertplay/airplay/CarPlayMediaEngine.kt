@@ -677,7 +677,9 @@ class CarPlayMediaEngine(
         } else if (framesPerPacket > 0) {
             Math.round(framesPerPacket * 1000.0 / format.sampleRate).toInt().coerceIn(5, 60)
         } else {
-            20
+            // Issue #1148: 20 ms of 48 kHz mono seals to 1,956 bytes — over one link MTU,
+            // so the packet left as IP fragments and every USB recording came out silent.
+            MicrophoneConfig.pcmFrameMillis(format.sampleRate, format.channels)
         }
         val opusBitrate = when {
             formatBits and OPUS_48K != 0L -> 96_000
