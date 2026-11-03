@@ -1609,14 +1609,17 @@ class DiPlayActivity : ComponentActivity() {
             navigationChannelControl(card)
             // Issues #253/#263: when the head unit merges all audio into one volume,
             // balance navigation prompts against music inside the app instead.
-            val volumeLabels = AirPlayPersistence.STREAM_VOLUME_PERCENTS.map { "$it%" }
-            choice(card, getString(R.string.settings_media_volume), volumeLabels,
+            val mediaVolumeLabels = AirPlayPersistence.STREAM_VOLUME_PERCENTS.map { "$it%" }
+            choice(card, getString(R.string.settings_media_volume), mediaVolumeLabels,
                 AirPlayPersistence.STREAM_VOLUME_PERCENTS.indexOf(AirPlayPersistence.loadMediaVolumePercent(this)).coerceAtLeast(0)) {
                 AirPlayPersistence.saveMediaVolumePercent(this, AirPlayPersistence.STREAM_VOLUME_PERCENTS[it])
             }
-            choice(card, getString(R.string.settings_navigation_volume), volumeLabels,
-                AirPlayPersistence.STREAM_VOLUME_PERCENTS.indexOf(AirPlayPersistence.loadNavigationVolumePercent(this)).coerceAtLeast(0)) {
-                AirPlayPersistence.saveNavigationVolumePercent(this, AirPlayPersistence.STREAM_VOLUME_PERCENTS[it])
+            // Navigation gets its own ladder up to 600%: the guidance bus on many head units
+            // is attenuated so hard that even 300% stays under the music.
+            val navVolumeLabels = AirPlayPersistence.NAVIGATION_VOLUME_PERCENTS.map { "$it%" }
+            choice(card, getString(R.string.settings_navigation_volume), navVolumeLabels,
+                AirPlayPersistence.NAVIGATION_VOLUME_PERCENTS.indexOf(AirPlayPersistence.loadNavigationVolumePercent(this)).coerceAtLeast(0)) {
+                AirPlayPersistence.saveNavigationVolumePercent(this, AirPlayPersistence.NAVIGATION_VOLUME_PERCENTS[it])
             }
             card.addView(label(getString(R.string.settings_stream_volume_description), 14, MUTED).apply {
                 setPadding(0, dp(8), 0, dp(6))

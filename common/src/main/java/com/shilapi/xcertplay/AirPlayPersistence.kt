@@ -60,6 +60,12 @@ object AirPlayPersistence {
     private const val KEY_NAVIGATION_VOLUME_PERCENT = "navigation_volume_percent"
     /** Issues #253/#263: selectable per-stream volume steps, in percent. */
     val STREAM_VOLUME_PERCENTS = listOf(25, 50, 75, 100, 125, 150, 175, 200, 250, 300)
+    /**
+     * Navigation runs hotter: head units often attenuate the guidance bus hard
+     * (W6: even the car's own nav-volume max stays quiet), so the in-app gain
+     * ladder continues to 600% for speech prompts.
+     */
+    val NAVIGATION_VOLUME_PERCENTS = listOf(25, 50, 75, 100, 125, 150, 175, 200, 250, 300, 350, 400, 450, 500, 550, 600)
     private const val KEY_NAVIGATION_AUDIO_CHANNEL = "navigation_audio_channel"
     private const val KEY_NAVIGATION_STREAM_TYPE = "navigation_stream_type"
     private const val KEY_WIRELESS_ENABLED = "wireless_enabled"
@@ -351,11 +357,11 @@ object AirPlayPersistence {
     fun loadNavigationVolumePercent(context: Context): Int =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .getInt(KEY_NAVIGATION_VOLUME_PERCENT, 100)
-            .takeIf { it in STREAM_VOLUME_PERCENTS } ?: 100
+            .takeIf { it in NAVIGATION_VOLUME_PERCENTS } ?: 100
 
     fun saveNavigationVolumePercent(context: Context, percent: Int) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-            .putInt(KEY_NAVIGATION_VOLUME_PERCENT, percent.takeIf { it in STREAM_VOLUME_PERCENTS } ?: 100)
+            .putInt(KEY_NAVIGATION_VOLUME_PERCENT, percent.takeIf { it in NAVIGATION_VOLUME_PERCENTS } ?: 100)
             .apply()
     }
 

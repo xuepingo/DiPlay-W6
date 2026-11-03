@@ -1165,11 +1165,15 @@ class AndroidMediaSink(
             onAudioDiagnostic,
             echoReference,
             callVoiceFilter && format.audioType == TELEPHONY_AUDIO_TYPE,
-            volumePercent = when (format.audioType) {
-                "media" -> mediaVolumePercent
-                "navigation" -> navigationVolumePercent
-                else -> 100
-            },
+            volumePercent = AudioChannelMapper.volumePercentFor(
+                audioType = format.audioType,
+                payloadType = format.payloadType,
+                mode = if (advancedAudioChannelMapping) AudioChannelMappingMode.AUTOMOTIVE_BUS else AudioChannelMappingMode.MOBILE_COMPATIBLE,
+                navigationStreamType = navigationStreamType,
+                telephonyDownlinkViaMusic = telephonyDownlinkViaMusic,
+                mediaVolumePercent = mediaVolumePercent,
+                navigationVolumePercent = navigationVolumePercent,
+            ),
         ).also {
             // Port of upstream #797: if the call lands on the earpiece, move it to the loudspeaker.
             if (format.audioType == TELEPHONY_AUDIO_TYPE) it.onRoutedToEarpiece = { moveCallToLoudspeaker(id) }
@@ -2883,7 +2887,7 @@ private class AudioRenderer(
      * Issues #253/#263: scales this stream's PCM16 by the configured percent so the
      * driver can balance navigation against media even when the head unit offers a
      * single volume. Runs once per writePcm call, before the chunked track writes.
-     * Above 100% (any boost — the 125%/150%/300% presets) a soft-knee limiter replaces hard
+     * Above 100% (any boost, up to the 600% navigation presets) a soft-knee limiter replaces hard
      * clipping so loud passages compress smoothly instead of producing harsh digital
      * distortion.
      */
@@ -2892,8 +2896,15 @@ private class AudioRenderer(
         val factor = volumePercent / 100.0
         // Any boost above unity uses the soft-knee limiter to avoid harsh digital clipping.
         val softKnee = factor > 1.0
-        // Hard clip at 70% FS then soft-compress to full scale (tanh-like).
-        val softThreshold = if (softKnee) (32767 * 0.7).toInt() else 32767
+        // Soft-compress to full scale (tanh-like) above a gain-dependent knee.
+        // High boosts raise the knee so the speech body keeps its linear gain
+        // (300% vs 600% must differ audibly) while only true peaks compress.
+        val kneeFraction = when {
+            factor >= 5.0 -> 0.88
+            factor >= 3.0 -> 0.82
+            else -> 0.70
+        }
+        val softThreshold = if (softKnee) (32767 * kneeFraction).toInt() else 32767
         val end = offset + length - 1
         var i = offset
         while (i < end) {

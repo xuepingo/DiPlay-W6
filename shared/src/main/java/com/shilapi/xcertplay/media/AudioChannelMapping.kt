@@ -54,6 +54,28 @@ internal object AudioChannelMapper {
     fun usesNavigationStream(audioType: String, payloadType: Int, advanced: Boolean): Boolean =
         !advanced && map(audioType, payloadType, AudioChannelMappingMode.MOBILE_COMPATIBLE).channel == AudioChannel.NAVIGATION
 
+    /**
+     * Issues #253/#263: which configured volume percent applies to this stream.
+     *
+     * Must follow the same channel mapping as routing — CarPlay never sends the
+     * audioType literal "navigation" (prompts arrive as "default"/"alert"), so a
+     * string match on audioType left the navigation gain permanently at 100%.
+     * Telephony / speech recognition keep unity gain; call loudness has its own path.
+     */
+    fun volumePercentFor(
+        audioType: String,
+        payloadType: Int,
+        mode: AudioChannelMappingMode,
+        navigationStreamType: Int = DEFAULT_NAVIGATION_STREAM_TYPE,
+        telephonyDownlinkViaMusic: Boolean = false,
+        mediaVolumePercent: Int = 100,
+        navigationVolumePercent: Int = 100,
+    ): Int = when (map(audioType, payloadType, mode, navigationStreamType, telephonyDownlinkViaMusic).channel) {
+        AudioChannel.MEDIA -> mediaVolumePercent
+        AudioChannel.NAVIGATION -> navigationVolumePercent
+        else -> 100
+    }
+
     private fun mapMobileCompatible(
         audioType: String,
         payloadType: Int,

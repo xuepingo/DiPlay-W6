@@ -133,6 +133,42 @@ class AudioChannelMappingTest {
         )
     }
 
+    @Test
+    fun volumePercentFollowsTheMappedChannelNotTheAudioTypeLiteral() {
+        // CarPlay never sends audioType="navigation"; prompts arrive as default/alert.
+        for (mode in AudioChannelMappingMode.entries) {
+            for (audioType in listOf("default", "alert", "compatibility", "unknown", "navigation")) {
+                val expected = if (
+                    mode == AudioChannelMappingMode.AUTOMOTIVE_BUS && audioType == "compatibility"
+                ) 250 else 300
+                assertEquals(
+                    "$mode/$audioType",
+                    expected,
+                    AudioChannelMapper.volumePercentFor(
+                        audioType = audioType,
+                        payloadType = 100,
+                        mode = mode,
+                        mediaVolumePercent = 250,
+                        navigationVolumePercent = 300,
+                    ),
+                )
+            }
+            assertEquals(
+                250,
+                AudioChannelMapper.volumePercentFor("media", 100, mode, mediaVolumePercent = 250, navigationVolumePercent = 300),
+            )
+            // Call / speech recognition keep unity gain regardless of the ladders.
+            assertEquals(
+                100,
+                AudioChannelMapper.volumePercentFor("telephony", 100, mode, mediaVolumePercent = 250, navigationVolumePercent = 300),
+            )
+            assertEquals(
+                100,
+                AudioChannelMapper.volumePercentFor("speechRecognition", 100, mode, mediaVolumePercent = 250, navigationVolumePercent = 300),
+            )
+        }
+    }
+
     private fun assertMapped(
         mode: AudioChannelMappingMode,
         audioType: String,
