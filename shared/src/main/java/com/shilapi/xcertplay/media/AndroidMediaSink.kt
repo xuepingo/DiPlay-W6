@@ -204,13 +204,14 @@ internal class AudioFocusCoordinator(
         closed = true
         active.clear()
         announcementDucking = false
-        announcementTimerArmed = false
         announcementChannel = null
         refreshRequest()
-        // Drop pending idle-release / mute-recovery callbacks so nothing fires after teardown.
-        // Only touch the Handler when something is queued (plain unit tests have no Looper).
-        if (muteRecoveryScheduled || idleTimerArmed) {
+        // Drop pending idle-release / mute-recovery / announcement-release callbacks so
+        // nothing fires after teardown. Only touch the Handler when something is queued
+        // (plain unit tests have no Looper).
+        if (muteRecoveryScheduled || idleTimerArmed || announcementTimerArmed) {
             muteRecoveryScheduled = false
+            announcementTimerArmed = false
             idleHandler.removeCallbacksAndMessages(null)
         }
     }

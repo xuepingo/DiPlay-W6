@@ -5394,10 +5394,14 @@ class CarPlayHostActivity : ComponentActivity() {
         // previous round's interface claim lingers — the outer retry loop
         // would otherwise hammer it forever with a growing backoff. Mirror
         // the wired-no-TCP stop: after a few consecutive busy failures, stop
-        // the automatic loop and ask for a physical replug instead. The VPN
-        // guard above already claimed "Device or resource busy" reasons, so
-        // matching "usbfs" here only catches the USB-select path.
-        if (!wirelessEnabled && reason.contains("usbfs", ignoreCase = true)) {
+        // the automatic loop and ask for a physical replug instead. Match
+        // only genuine EBUSY: errnoSuffix appends "usbfs errno N" for every
+        // errno, so a bare "usbfs" match also counted ENODEV/ENOENT replug
+        // drops as "busy" and showed the wrong guidance. The VPN guard above
+        // already claimed "Device or resource busy" reasons.
+        if (!wirelessEnabled && (reason.contains("usbfs errno 16", ignoreCase = true) ||
+            reason.contains("interface busy", ignoreCase = true))
+        ) {
             wiredUsbBusyFailures += 1
             if (wiredUsbBusyFailures >= WIRED_USB_BUSY_FAILURE_LIMIT) {
                 appendLog("wired USB busy failures=$wiredUsbBusyFailures; automatic retry stopped, manual replug required generation=$restartGeneration")
