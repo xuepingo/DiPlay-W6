@@ -255,6 +255,10 @@ internal object CarPlayVideo : CarPlayVideoListener {
         itemUuid = null
         playing = false
         pendingSeekMillis = null
+        // S7: also clear the item-shape state, or a later activity.load() before the next
+        // insertPlayQueueItem would inherit the previous item's HLS flag and start offset.
+        streaming = false
+        startMillis = 0
         activity?.finish()
     }
 }

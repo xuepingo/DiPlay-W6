@@ -97,10 +97,14 @@ internal object UiDialogs {
         dialog.show()
         // Car ROMs measure dialog windows against the full stitched display; pin a sane width.
         val windowWidth = dialog.context.resources.displayMetrics.widthPixels
-        dialog.window?.setLayout(
-            widthHint.coerceAtMost(windowWidth - dp(dialog.context, 48)).coerceAtLeast(dp(dialog.context, 320)),
-            WindowManager.LayoutParams.WRAP_CONTENT,
+        // S8: clamp in one pass so the 320dp floor cannot exceed the window on narrow
+        // displays (the old coerceAtLeast(320) ran after coerceAtMost and re-widened it).
+        val available = (windowWidth - dp(dialog.context, 48)).coerceAtLeast(1)
+        val width = widthHint.coerceIn(
+            minOf(dp(dialog.context, 320), available),
+            available,
         )
+        dialog.window?.setLayout(width, WindowManager.LayoutParams.WRAP_CONTENT)
     }
 
     private fun column(context: Context): LinearLayout = LinearLayout(context).apply {
@@ -383,8 +387,16 @@ internal object UiDialogs {
      */
     private class MaxHeightScrollView(context: Context, private val maxHeight: Int) : ScrollView(context) {
         override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-            val capped = MeasureSpec.makeMeasureSpec(maxHeight, MeasureSpec.AT_MOST)
-            super.onMeasure(widthMeasureSpec, capped)
+            // S8: honour the parent's height limit too — replacing the spec outright
+            // dropped it and could overflow a short parent.
+            val parentMode = MeasureSpec.getMode(heightMeasureSpec)
+            val parentSize = MeasureSpec.getSize(heightMeasureSpec)
+            val cap = when (parentMode) {
+                MeasureSpec.EXACTLY -> parentSize
+                MeasureSpec.AT_MOST -> minOf(maxHeight, parentSize)
+                else -> maxHeight
+            }
+            super.onMeasure(widthMeasureSpec, MeasureSpec.makeMeasureSpec(cap, MeasureSpec.AT_MOST))
         }
     }
 }

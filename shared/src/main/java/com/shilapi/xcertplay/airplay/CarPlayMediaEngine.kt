@@ -133,7 +133,9 @@ class CarPlayMediaEngine(
             ?.let { bufferedTransition = null }
         return !session.isClosed && session !in retiredBufferedSessions && bufferedTransition == null
     }
-    @Volatile private var nextRemoteControlStreamId = FIRST_REMOTE_CONTROL_STREAM_ID
+    // Atomic, not just @Volatile: ++ is read-modify-write and two concurrent SETUPs
+    // could otherwise hand out the same streamID.
+    private val nextRemoteControlStreamId = java.util.concurrent.atomic.AtomicLong(FIRST_REMOTE_CONTROL_STREAM_ID)
     @Volatile private var iapTunnelHandler: ((BlockingDuplexByteStream) -> Boolean)? = null
 
     override fun setIapTunnelHandler(handler: ((BlockingDuplexByteStream) -> Boolean)?) {
@@ -494,7 +496,7 @@ class CarPlayMediaEngine(
      */
     private fun videoDataStream(session: AirPlaySession, uuid: String, stream: Map<String, Any?>): Map<String, Any?>? {
         if (uuid in VideoInCar.REMOTE_CONTROL_UUIDS && (stream["controlType"] as? Number)?.toInt() == 1) {
-            val streamId = nextRemoteControlStreamId++
+            val streamId = nextRemoteControlStreamId.getAndIncrement()
             session.logTrace("video remote-control stream accepted uuid=$uuid streamID=$streamId")
             return linkedMapOf("type" to STREAM_TYPE_DATA, "streamID" to streamId)
         }

@@ -245,10 +245,17 @@ internal object DiPlayUpdateClient {
 
     fun configure(context: android.content.Context) {
         appContext = context.applicationContext
+        // S5: these are JVM-wide (cannot be scoped per connection) and exist only for
+        // Android 4.x dual-stack ROMs. Never clobber an explicit setting, and log
+        // failures instead of swallowing them.
         try {
-            System.setProperty("java.net.preferIPv4Stack", "true")
-            System.setProperty("java.net.preferIPv6Addresses", "false")
-        } catch (_: Exception) {}
+            if (System.getProperty("java.net.preferIPv4Stack") == null) {
+                System.setProperty("java.net.preferIPv4Stack", "true")
+                System.setProperty("java.net.preferIPv6Addresses", "false")
+            }
+        } catch (error: Exception) {
+            android.util.Log.w("DiPlayUpdateClient", "preferIPv4Stack not applied", error)
+        }
     }
 
     private data class LegacyTls(val factory: SSLSocketFactory, val trust: X509TrustManager)

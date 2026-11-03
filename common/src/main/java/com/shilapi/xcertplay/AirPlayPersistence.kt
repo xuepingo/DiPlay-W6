@@ -145,6 +145,7 @@ object AirPlayPersistence {
     private const val KEY_REMOTE_MFI_SERVER = "remote_mfi_server"
     private const val KEY_REMOTE_MFI_TOKEN = "remote_mfi_token"
     private const val KEY_CUSTOM_BLUETOOTH_MAC = "custom_bluetooth_mac"
+    private const val KEY_AMBIENT_DELAY_SECONDS = "ambient_delay_seconds"
     private const val SAFE_AREA_KEY_PREFIX = "safe_area_"
     private const val CUSTOM_ICON_FILE = "airplay-icon.png"
 
@@ -155,11 +156,11 @@ object AirPlayPersistence {
 
     fun loadAmbientDelaySeconds(context: Context): Int =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .getInt("ambient_delay_seconds", 2).coerceIn(0, 60)
+            .getInt(KEY_AMBIENT_DELAY_SECONDS, 2).coerceIn(0, 60)
 
     fun saveAmbientDelaySeconds(context: Context, seconds: Int) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-            .putInt("ambient_delay_seconds", seconds.coerceIn(0, 60)).apply()
+            .putInt(KEY_AMBIENT_DELAY_SECONDS, seconds.coerceIn(0, 60)).apply()
     }
 
     fun loadDisplayScalePercent(context: Context): Int =

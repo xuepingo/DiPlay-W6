@@ -96,7 +96,9 @@ internal class AudioFocusCoordinator(
     @Suppress("DEPRECATION")
     internal fun legacyOutputSnapshot(streamType: Int): String = runCatching {
         val audio = manager ?: return@runCatching "audioManager=unavailable"
-        val activeStream = streamType.takeIf { it in 0..10 } ?: AudioManager.STREAM_MUSIC
+        val activeStream = streamType
+            .takeIf { it in AudioManager.STREAM_VOICE_CALL..STREAM_ACCESSIBILITY_COMPAT }
+            ?: AudioManager.STREAM_MUSIC
         "a2dpOn=${audio.isBluetoothA2dpOn} musicActive=${audio.isMusicActive} " +
             "selectedStream=$activeStream volume=${audio.getStreamVolume(activeStream)}/" +
             "${audio.getStreamMaxVolume(activeStream)} " +
@@ -469,7 +471,8 @@ internal class AudioFocusCoordinator(
         // Telephony and assistant speech remain audible, and navigation never enters this map.
         // This changes only the renderer's relative gain, never Android's user stream volume.
         if (entry.channel != AudioChannel.MEDIA || entry.appliedVolume == mediaVolume) return
-        val applied = runCatching { track.setStereoVolume(mediaVolume, mediaVolume) == AudioTrack.SUCCESS }.getOrDefault(false)
+        // setVolume replaced the API-28-deprecated setStereoVolume; same gain on both channels.
+        val applied = runCatching { track.setVolume(mediaVolume) == AudioTrack.SUCCESS }.getOrDefault(false)
         if (applied) entry.appliedVolume = mediaVolume
     }
 
@@ -487,6 +490,8 @@ internal class AudioFocusCoordinator(
         const val TAG = "DiPlay-AudioFocus"
         const val FULL_VOLUME = 1f
         const val DUCKED_VOLUME = 0.2f
+        /** STREAM_ACCESSIBILITY (API 26, value 10); upper bound for the legacy snapshot range. */
+        const val STREAM_ACCESSIBILITY_COMPAT = 10
         /** If the GAIN callback is lost, restore volume after this grace period. */
         const val MUTE_RECOVERY_MILLIS = 3_000L
         /**
@@ -875,7 +880,7 @@ class AndroidMediaSink(
 
     override fun onAudioStarted(id: AudioStreamId, format: AudioFormat, firstSample: Int) {
         audioRenderer(id, format).start()
-        if (format.audioType == "media") updateMediaAudio(id, true)
+        if (format.audioType == MEDIA_AUDIO_TYPE) updateMediaAudio(id, true)
     }
 
     override fun onAudioRtp(id: AudioStreamId, format: AudioFormat, rtp: ByteArray, sample: Int) {
@@ -902,7 +907,7 @@ class AndroidMediaSink(
     override fun onMicrophoneStarted(id: AudioStreamId, config: MicrophoneConfig) {
         // This callback runs on the downlink thread; microphone failures must not stop playback.
         try {
-            if (config.audioType == "telephony") {
+            if (config.audioType == TELEPHONY_AUDIO_TYPE) {
                 // Issue #290: the call volume boost does not need the communication
                 // mode, so it runs even when mic compatibility skips the mode.
                 boostCallStreamVolume()
@@ -1183,6 +1188,7 @@ class AndroidMediaSink(
 
     internal companion object {
         const val TELEPHONY_AUDIO_TYPE = "telephony"
+        const val MEDIA_AUDIO_TYPE = "media"
     }
 }
 

@@ -142,10 +142,17 @@ internal class CarPlayNightModeController(
 
     private fun onLux(lux: Float) {
         if (!resumed || !listening || mode != CarPlayNightMode.AMBIENT) return
+        // Hysteresis band around the configured threshold: dusk/dawn readings that hover
+        // at the threshold must not flip night mode back and forth (S3). Half-width is
+        // threshold/4 clamped to 1..25 lux (band 2-50 lux); inside the band the current
+        // state holds, so a single threshold is no longer a hard edge.
+        val half = (threshold.lux / 4).coerceIn(1, 25)
+        val nightEdge = (threshold.lux - half).coerceAtLeast(AmbientLightThreshold.MIN_LUX)
+        val dayEdge = threshold.lux + half
         val target = when {
             !lux.isFinite() || lux < 0f -> null
-            !night && lux < threshold.lux.toFloat() -> true
-            night && lux >= threshold.lux.toFloat() -> false
+            !night && lux < nightEdge.toFloat() -> true
+            night && lux >= dayEdge.toFloat() -> false
             else -> null
         }
         if (target == pending) return
