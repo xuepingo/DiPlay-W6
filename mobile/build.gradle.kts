@@ -33,8 +33,8 @@ android {
         multiDexEnabled = true
         multiDexKeepProguard = file("multidex-config.pro")
         testInstrumentationRunner = "com.shilapi.xcertplay.T3LegacyInstrumentation"
-        versionCode = 133
-        versionName = "0.3.13"
+        versionCode = 135
+        versionName = "0.3.15"
 
         // Car head units are ARM; the x86/x86_64 copies of the bundled native libraries
         // (Conscrypt, opus, lwIP) only ever shipped for emulators and cost ~4.7 MB.

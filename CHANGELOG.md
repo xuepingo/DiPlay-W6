@@ -1,3 +1,16 @@
+# DiPlay 0.3.15 — 2026-11-02
+
+- Ignore dock-squeezed shrinks at any age, not just inside the settle window (#363): recognize dock bar squeezes by signature across the entire session and keep the established fullscreen baseline, preventing latched black borders.
+- Re-front the task to dismiss a launcher dock bar (experimental, #363): add an experimental display setting that re-orders the CarPlay task to front when a dock squeeze is detected, dismissing stubborn launcher dock bars automatically.
+
+See [v0.3.15 release notes](docs/RELEASE-NOTES-0.3.15.md) for details.
+
+# DiPlay 0.3.14 — 2026-11-02
+
+- Do not stack a forced re-enumeration on an attach that already transitioned (#368): avoid redundant second vendor re-enumeration on an attach that already performed a transition and entered CarPlay configuration, preventing USB bus stalls and transient disconnects on legacy head units.
+
+See [v0.3.14 release notes](docs/RELEASE-NOTES-0.3.14.md) for details.
+
 # DiPlay 0.3.13 — 2026-11-02
 
 - Auto-enable reverse cold start and yield hardware overlay layer on legacy units (#315): detect legacy platforms (PF8227/MTK 8227L, Allwinner, Rockchip, Android 4.x/API <= 19) to auto-enable delayed reverse cold start, and temporarily hide SurfaceView hardware overlay during reverse to eliminate GPU layer collisions with the reverse camera.

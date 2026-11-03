@@ -680,6 +680,9 @@ class CarPlayHostActivity : ComponentActivity() {
     private var carplayAutoDisconnectBt = false
     private var telephonyDownlinkViaMusic = false
     private var announcementDuckMedia = false
+    private var dockBarRefrontEnabled = false
+    private var dockRefrontAttempts = 0
+    private var dockRefrontLastAttemptMs = 0L
     private var awaitingVpnConsent = false
     private var vpnConsentLaunchElapsed = 0L
     private var vpnConsentInstantDenyCount = 0
@@ -1041,6 +1044,7 @@ class CarPlayHostActivity : ComponentActivity() {
         carplayAutoDisconnectBt = AirPlayPersistence.loadCarplayAutoDisconnectBt(this)
         telephonyDownlinkViaMusic = AirPlayPersistence.loadTelephonyDownlinkViaMusic(this)
         announcementDuckMedia = AirPlayPersistence.loadAnnouncementDuckMedia(this)
+        dockBarRefrontEnabled = AirPlayPersistence.loadDockBarRefront(this)
     }
 
     private fun requestStartupPrerequisites() {
@@ -4995,6 +4999,57 @@ class CarPlayHostActivity : ComponentActivity() {
         return SystemClock.elapsedRealtime() - surfaceReaddAtMs < 3_000L
     }
 
+    /**
+     * Issue #363 (v0.3.14 retest): the head unit's dock bar can squeeze the
+     * window vertically long after the settle window above — the layout fit
+     * then shrinks the surface proportionally (a 1024x600 canvas fitted into
+     * a 1024x500 window becomes 854x500) and the black borders latch. That
+     * squeeze is not a content size change: the window keeps its width, only
+     * its height is compressed, the fit is height-driven (the fitted bounds
+     * fill the squeezed height and keep the canvas aspect), and the session
+     * canvas itself is unchanged. Recognize it at any age and keep the
+     * established size: the window clips the surface while the bar is up
+     * and the picture is intact when it drops. A genuine reverse entry is
+     * not this — while reversing, the reverse flag is set and the video
+     * view has already yielded the display surface.
+     */
+    /**
+     * Issue #363: the reporter's discriminator proved the dock bar is
+     * dropped by task re-fronting, not by focus gain (focus returns after
+     * every reverse exit and the bar stays). Re-front our own task: the
+     * host is singleTask, so the start delivers onNewIntent to this very
+     * instance and re-fronts its task without ever leaving the CarPlay
+     * screen. Bounded per squeeze episode (3 attempts, 5 s apart) so a
+     * launcher that refuses is not fought forever; the episode resets
+     * when full height is restored.
+     */
+    private fun maybeRefrontForDockBar() {
+        if (!dockBarRefrontEnabled) return
+        if (activeAirPlaySession == null || menuOpen || shuttingDown.get() ||
+            handshakeResetInProgress || reverseCameraActive) return
+        val now = SystemClock.elapsedRealtime()
+        if (dockRefrontAttempts >= 3 || now - dockRefrontLastAttemptMs < 5_000L) return
+        dockRefrontAttempts += 1
+        dockRefrontLastAttemptMs = now
+        appendLog("Display: dock squeeze detected; bringing the CarPlay task to the front (attempt $dockRefrontAttempts)")
+        runCatching {
+            startActivity(
+                Intent(this, CarPlayHostActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT),
+            )
+        }.onFailure { appendLog("Display: task re-front failed: ${it.message}") }
+    }
+
+    private fun isDockSqueezedShrink(bounds: CarPlaySurfaceBounds, viewWidth: Int, viewHeight: Int): Boolean {
+        if (reverseCameraActive) return false
+        val baseline = surfaceReaddBounds ?: return false
+        if (bounds.width >= baseline.width || bounds.height >= baseline.height) return false
+        if (viewHeight - bounds.height > 1) return false
+        val canvas = activeDisplaySize ?: return false
+        // The squeezed fit keeps the canvas aspect (within rounding).
+        return kotlin.math.abs(bounds.width * canvas.height - bounds.height * canvas.width) <= canvas.height
+    }
+
     private fun updateVideoLayout(viewWidth: Int, viewHeight: Int) {
         val view = videoView ?: return
         if (viewWidth <= 0 || viewHeight <= 0) return
@@ -5020,6 +5075,12 @@ class CarPlayHostActivity : ComponentActivity() {
             // transitional smaller size; fitting to it would setFixedSize the new
             // Surface back down and the settle listener would keep re-asserting
             // the small size, so the loop ended small instead of converging.
+            val readdBounds = surfaceReaddBounds
+            if (dockRefrontAttempts > 0 && readdBounds != null &&
+                bounds.height >= readdBounds.height) {
+                appendLog("Display: full height restored after task re-front (attempts=$dockRefrontAttempts)")
+                dockRefrontAttempts = 0
+            }
             val transitionalShrink = fallbackVideoBounds != bounds && isTransitionalShrinkAfterReadd(bounds)
             if (transitionalShrink) {
                 appendLog(
@@ -5027,7 +5088,16 @@ class CarPlayHostActivity : ComponentActivity() {
                         "after surface re-add; keeping ${surfaceReaddBounds?.width}x${surfaceReaddBounds?.height}",
                 )
             }
-            if (fallbackVideoBounds != bounds && !transitionalShrink) {
+            val dockSqueezedShrink = fallbackVideoBounds != bounds && !transitionalShrink &&
+                isDockSqueezedShrink(bounds, viewWidth, viewHeight)
+            if (dockSqueezedShrink) {
+                appendLog(
+                    "Display: ignored dock-squeezed shrink to ${bounds.width}x${bounds.height}; " +
+                        "keeping ${surfaceReaddBounds?.width}x${surfaceReaddBounds?.height}",
+                )
+                maybeRefrontForDockBar()
+            }
+            if (fallbackVideoBounds != bounds && !transitionalShrink && !dockSqueezedShrink) {
                 val previousBounds = fallbackVideoBounds
                 fallbackVideoBounds = bounds
                 if (previousBounds == null && bounds.width > 0 && bounds.height > 0) {
