@@ -815,6 +815,9 @@ class CarPlayHostActivity : ComponentActivity() {
             // the display and gave it back, #250/#214) a still CarPlay screen sends no frames,
             // so ask for one or the screen stays black even though audio keeps playing.
             sink?.refreshPicture(SCREEN_TYPE_MAIN)
+            // Set the transform before the first decoded frame arrives: the view
+            // has no layout dimensions yet, so use the SurfaceTexture buffer size.
+            if (width > 0 && height > 0) updateVideoLayout(width, height)
             // Issue #290: a surface rebuild can land while the view is still at an
             // intermediate size; the two-stage reapply (immediate + posted/settle)
             // is the only pass guaranteed to run again once the size has settled.

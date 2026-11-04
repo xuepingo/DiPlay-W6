@@ -68,6 +68,8 @@ internal class AudioFocusCoordinator(
     private var focusVolume = FULL_VOLUME
     private var announcementDucking = false
     private var announcementChannel: AudioChannel? = null
+    private var volumeRampTarget = FULL_VOLUME
+    private var volumeRampRunning = false
     /** Wall clock of the last announcement-channel PCM write; only read by the release check. */
     @Volatile private var lastAnnouncementNanos = 0L
     @Volatile private var announcementTimerArmed = false
@@ -211,9 +213,10 @@ internal class AudioFocusCoordinator(
         // Drop pending idle-release / mute-recovery / announcement-release callbacks so
         // nothing fires after teardown. Only touch the Handler when something is queued
         // (plain unit tests have no Looper).
-        if (muteRecoveryScheduled || idleTimerArmed || announcementTimerArmed) {
+        if (muteRecoveryScheduled || idleTimerArmed || announcementTimerArmed || volumeRampRunning) {
             muteRecoveryScheduled = false
             announcementTimerArmed = false
+            volumeRampRunning = false
             idleHandler.removeCallbacksAndMessages(null)
         }
     }
@@ -388,7 +391,7 @@ internal class AudioFocusCoordinator(
                 val line = "Audio: announcement duck engaged channel=$channel"
                 Log.i(TAG, line)
                 runCatching { report(line) }
-                setMediaVolume(minOf(focusVolume, DUCKED_VOLUME))
+                smoothVolumeTo(minOf(focusVolume, DUCKED_VOLUME))
             }
             if (announcementTimerArmed) return
             announcementTimerArmed = true
@@ -412,7 +415,7 @@ internal class AudioFocusCoordinator(
                 announcementChannel = null
                 Log.i(TAG, line)
                 runCatching { report(line) }
-                setMediaVolume(focusVolume)
+                smoothVolumeTo(focusVolume)
                 return@Runnable
             }
         }
@@ -422,6 +425,31 @@ internal class AudioFocusCoordinator(
     private fun setMediaVolume(volume: Float) {
         mediaVolume = volume
         active.forEach { (track, entry) -> applyMediaVolume(track, entry) }
+    }
+
+    /** Ramp toward [target] over ~500 ms instead of jumping (duck engage/release). */
+    private fun smoothVolumeTo(target: Float) {
+        if (mediaVolume == target) return
+        volumeRampTarget = target
+        if (volumeRampRunning) return
+        volumeRampRunning = true
+        idleHandler.post(volumeRampStep)
+    }
+
+    private val volumeRampStep = object : Runnable {
+        override fun run() {
+            if (closed) { volumeRampRunning = false; return }
+            val current = mediaVolume
+            val target = volumeRampTarget
+            val step = (target - current) * VOLUME_RAMP_STEP_FRACTION
+            val next = if (kotlin.math.abs(target - current) < VOLUME_RAMP_MIN_DELTA) target else current + step
+            setMediaVolume(next)
+            if (next == target) {
+                volumeRampRunning = false
+            } else {
+                idleHandler.postDelayed(this, VOLUME_RAMP_STEP_MILLIS)
+            }
+        }
     }
 
     /**
@@ -490,6 +518,9 @@ internal class AudioFocusCoordinator(
         const val TAG = "DiPlay-AudioFocus"
         const val FULL_VOLUME = 1f
         const val DUCKED_VOLUME = 0.2f
+        const val VOLUME_RAMP_STEP_MILLIS = 50L
+        const val VOLUME_RAMP_STEP_FRACTION = 0.15f
+        const val VOLUME_RAMP_MIN_DELTA = 0.01f
         /** STREAM_ACCESSIBILITY (API 26, value 10); upper bound for the legacy snapshot range. */
         const val STREAM_ACCESSIBILITY_COMPAT = 10
         /** If the GAIN callback is lost, restore volume after this grace period. */
