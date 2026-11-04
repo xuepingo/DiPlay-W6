@@ -825,6 +825,14 @@ class CarPlayController(
         (hotspot as? ManualHotspotManager)?.close()
         val teardownStarted = System.nanoTime()
         connectionDiagnostic("teardown begin transport=${config.transport}")
+        // The #275/#368 re-enumeration latches are companion-scoped (survive controller
+        // recreation within one USB attach). close() runs on Activity destroy while the
+        // phone stays plugged in; the stale latches would then suppress the forced
+        // re-enumeration the next attempt needs (the USBMUX read queue is wedged after
+        // the half-torn-down data paths). Reset both so the next controller treats this
+        // as a fresh attach episode.
+        forcedReenumerationForAttach = false
+        reenumeratedThisAttach = false
         videoGate?.close()
         // The media engine owns a single-thread scheduler whose core thread never times out;
         // shutting it down here stops one leaked thread (and its queued session references)
