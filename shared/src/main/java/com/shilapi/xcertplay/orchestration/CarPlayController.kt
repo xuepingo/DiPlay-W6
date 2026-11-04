@@ -826,6 +826,10 @@ class CarPlayController(
         val teardownStarted = System.nanoTime()
         connectionDiagnostic("teardown begin transport=${config.transport}")
         videoGate?.close()
+        // The media engine owns a single-thread scheduler whose core thread never times out;
+        // shutting it down here stops one leaked thread (and its queued session references)
+        // per reconnect. Cancelled reaps are harmless — the sessions they hold are closing.
+        closeBestEffort("media engine") { media.close() }
         BydNavigationOutputs.endNow()
         com.shilapi.xcertplay.glance.CarPlayGlance.setConnected(false)
         BydNavigationOutputs.clearClusterStreamControl(::applyClusterUi)

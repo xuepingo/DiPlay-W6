@@ -50,12 +50,12 @@ object UsbBtPairingUiRouter {
         confirm(true)
 
         val activity = activityRef?.get()
-        if (activity == null || activity.isFinishing) {
+        if (activity == null || activity.isFinishing || activity.isDestroyed) {
             Log.w(TAG, "no foreground activity to show pairing code for $bdAddr")
             return
         }
         activity.runOnUiThread {
-            if (activity.isFinishing) return@runOnUiThread
+            if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
             UsbBtPairingDialog.show(activity, bdAddr, sixDigitNumber, null)
         }
     }
@@ -136,10 +136,17 @@ object UsbBtPairingDialog {
         var dialog: Dialog? = null
         val timer = object : CountDownTimer(COUNTDOWN_MS, 1_000) {
             override fun onTick(millisUntilFinished: Long) {
+                // The dialog outlives its Activity if the host is destroyed mid-countdown
+                // (the timer is not lifecycle-bound); touching a dead view would crash.
+                if (activity.isDestroyed || activity.isFinishing) {
+                    cancel()
+                    return
+                }
                 countdownView.text = activity.getString(R.string.settings_usb_pairing_countdown, millisUntilFinished / 1000)
             }
 
             override fun onFinish() {
+                if (activity.isDestroyed || activity.isFinishing) return
                 decide(true)
                 runCatching { dialog?.dismiss() }
             }

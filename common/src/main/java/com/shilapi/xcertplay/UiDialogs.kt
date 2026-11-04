@@ -152,6 +152,10 @@ internal object UiDialogs {
             addView(optionsList, ViewGroup.LayoutParams(-1, -2))
         }
         val optionRows = ArrayList<View>()
+        // Declared before the rows so the tap handlers can bind this dialog's own leash.
+        // Binding the global `lastLeash` made a tap in an older dialog write the newer
+        // dialog's selectedIndex when two were up at once.
+        val leash = DialogLeash(dialog, title, optionRows)
         options.forEachIndexed { index, option ->
             val row = TextView(context).apply {
                 text = if (index == current) "✓  $option" else "    $option"
@@ -164,7 +168,7 @@ internal object UiDialogs {
                     setStroke(2, borderColor)
                 }
                 setOnClickListener {
-                    lastLeash?.selectedIndex = index
+                    leash.selectedIndex = index
                     dialog.dismiss()
                     onPick(index)
                 }
@@ -174,7 +178,7 @@ internal object UiDialogs {
             optionsList.addView(space(context, 8))
         }
         content.addView(scroll, LinearLayout.LayoutParams(-1, -2))
-        val leash = DialogLeash(dialog, title, optionRows).apply { selectedIndex = current }
+        leash.selectedIndex = current
         if (neutral != null || negative != null) {
             content.addView(space(context, 8))
             val actions = LinearLayout(context).apply {
@@ -204,6 +208,12 @@ internal object UiDialogs {
         }
         dialog.setContentView(content)
         lastLeash = leash
+        dialog.setOnDismissListener {
+            // Drop the static reference on dismissal: it holds the Dialog and, through its
+            // views, the Activity, so without this the last dialog pins its Activity for the
+            // life of the process.
+            if (lastLeash === leash) lastLeash = null
+        }
         layoutDialog(dialog, dp(context, 560))
         return dialog
     }
@@ -260,9 +270,18 @@ internal object UiDialogs {
                 dialog.dismiss()
                 onApply(pending)
             }))
-        if (onDismiss != null) dialog.setOnDismissListener { onDismiss() }
+        dialog.setOnDismissListener {
+            onDismiss?.invoke()
+            if (lastLeash === leash) lastLeash = null
+        }
         dialog.setContentView(content)
         lastLeash = leash
+        dialog.setOnDismissListener {
+            // Drop the static reference on dismissal: it holds the Dialog and, through its
+            // views, the Activity, so without this the last dialog pins its Activity for the
+            // life of the process.
+            if (lastLeash === leash) lastLeash = null
+        }
         layoutDialog(dialog, dp(context, 560))
         return dialog
     }
@@ -315,6 +334,12 @@ internal object UiDialogs {
         content.addView(actions)
         dialog.setContentView(content)
         lastLeash = leash
+        dialog.setOnDismissListener {
+            // Drop the static reference on dismissal: it holds the Dialog and, through its
+            // views, the Activity, so without this the last dialog pins its Activity for the
+            // life of the process.
+            if (lastLeash === leash) lastLeash = null
+        }
         layoutDialog(dialog, dp(context, 560))
         return dialog
     }

@@ -145,7 +145,8 @@ class DiPlayActivity : ComponentActivity() {
     private var disconnectButton: Button? = null
     private var lastRunning: Boolean? = null
     private var pendingWireless = false
-    private var initialLaunch = true
+    /** True only for the first create; a recreate (language/density) must not re-run auto-connect. */
+    private var initialLaunch = false
     private var notificationTransport = true
     private var exportInProgress = false
     private var usbPermissionOperation: UsbPermissionSetup.Operation? = null
@@ -278,8 +279,12 @@ class DiPlayActivity : ComponentActivity() {
         connectionSettingsReturnCategory = savedInstanceState?.getString("connection_settings_return_category")
             ?.let { runCatching { SettingsCategory.valueOf(it) }.getOrNull() }
         page = savedInstanceState?.getString("page") ?: intent.getStringExtra("page") ?: "home"
+        // A recreate (language/density switch) must not re-trigger first-launch behaviour:
+        // auto-connect would interrupt the very handshake the recreate landed in the middle
+        // of, and the update check would fire a second time.
+        initialLaunch = savedInstanceState == null
         render()
-        handler.postDelayed(automaticUpdateCheck, 4000L)
+        if (initialLaunch) handler.postDelayed(automaticUpdateCheck, 4000L)
         handleWirelessRecovery()
         // USB-Bluetooth dongle: route Numeric Comparison pairing requests to
         // this Activity's dialog (no-op when no dongle stack is present).

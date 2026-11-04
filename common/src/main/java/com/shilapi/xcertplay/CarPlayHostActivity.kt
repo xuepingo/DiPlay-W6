@@ -810,18 +810,18 @@ class CarPlayHostActivity : ComponentActivity() {
                 }
             }
             appendLog(if (existing === surface) "Texture surface reused" else "Texture surface created")
+            // Set the transform BEFORE handing the surface to the decoder, so the first
+            // frame cannot render with a stale one. The callback's width/height are
+            // SurfaceTexture buffer dimensions, not view pixels: feeding them to
+            // updateVideoLayout would fit the canvas in the wrong coordinate space and
+            // leave a mis-scaled first frame. reapplyVideoLayout uses the view's own size
+            // and re-runs after layout settles (issue #290).
+            reapplyVideoLayout()
             attachSurface(surface)
             // Like the SurfaceView path: after a surface rebuild (e.g. the reverse camera took
             // the display and gave it back, #250/#214) a still CarPlay screen sends no frames,
             // so ask for one or the screen stays black even though audio keeps playing.
             sink?.refreshPicture(SCREEN_TYPE_MAIN)
-            // Set the transform before the first decoded frame arrives: the view
-            // has no layout dimensions yet, so use the SurfaceTexture buffer size.
-            if (width > 0 && height > 0) updateVideoLayout(width, height)
-            // Issue #290: a surface rebuild can land while the view is still at an
-            // intermediate size; the two-stage reapply (immediate + posted/settle)
-            // is the only pass guaranteed to run again once the size has settled.
-            reapplyVideoLayout()
             scheduleDisplaySize(width, height)
         }
 
@@ -927,8 +927,10 @@ class CarPlayHostActivity : ComponentActivity() {
         }
         runCatching { registerReceiver(reverseCameraReceiver, reverseFilter) }
         lastConfiguration = Configuration(resources.configuration)
-        darkMode = savedInstanceState?.getBoolean("carplay_night_active")
-            ?: effectiveSystemNight()
+        // Night state is owned by nightModeController (configured below) and recomputed on
+        // every create; an instance-state copy here was immediately overwritten by
+        // loadPersistedSettings(), so nothing is saved for it (see onSaveInstanceState).
+        darkMode = effectiveSystemNight()
         logThemeState(ThemeModeDiagnostics.Source.CREATE, resources.configuration)
         advancedAudioChannelMappingSupported =
             resources.getBoolean(R.bool.config_advanced_audio_channel_mapping)
@@ -1048,6 +1050,26 @@ class CarPlayHostActivity : ComponentActivity() {
         telephonyDownlinkViaMusic = AirPlayPersistence.loadTelephonyDownlinkViaMusic(this)
         announcementDuckMedia = AirPlayPersistence.loadAnnouncementDuckMedia(this)
         dockBarRefrontEnabled = AirPlayPersistence.loadDockBarRefront(this)
+        // Handshake-shaping settings also owned by the settings screen. This host is reused
+        // via REORDER_TO_FRONT instead of being recreated, so a stale onCreate snapshot meant
+        // "change HEVC/fps, hit reconnect" kept negotiating with the old values until the
+        // activity was finally destroyed. Re-read them here like the connection settings.
+        hevcEnabled = AirPlayPersistence.loadHevcEnabled(this)
+        hevcSoftwareDecoderEnabled =
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+                AirPlayPersistence.loadHevcSoftwareDecoderEnabled(this)
+        fps = AirPlayPersistence.loadFps(this)
+        widthPhysicalMm = AirPlayPersistence.loadWidthPhysicalMm(this)
+        physicalSizeBasis = AirPlayPersistence.loadPhysicalSizeBasis(this)
+        manufacturer = AirPlayPersistence.loadManufacturer(this)
+        model = AirPlayPersistence.loadModel(this)
+        rightHandDrive = AirPlayPersistence.loadRightHandDrive(this)
+        safeAreaDrawOutside = AirPlayPersistence.loadSafeAreaDrawOutside(this)
+        debugLogsEnabled = AirPlayPersistence.loadDebugLogsEnabled(this)
+        advancedAudioChannelMapping =
+            advancedAudioChannelMappingSupported &&
+                AirPlayPersistence.loadAdvancedAudioChannelMapping(this)
+        navigationStreamType = AirPlayPersistence.loadNavigationStreamType(this)
     }
 
     private fun requestStartupPrerequisites() {
@@ -1427,7 +1449,9 @@ class CarPlayHostActivity : ComponentActivity() {
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
-        outState.putBoolean("carplay_night_active", darkMode)
+        // darkMode is deliberately not saved: nightModeController recomputes it on create
+        // (AMBIENT/SCHEDULE follow the light sensor and the clock, not the pre-destroy value).
+        super.onSaveInstanceState(outState)
         super.onSaveInstanceState(outState)
     }
 
@@ -1550,6 +1574,22 @@ class CarPlayHostActivity : ComponentActivity() {
         sessionLog = null
         vpnDeniedDialog?.dismiss()
         vpnDeniedDialog = null
+        // The settle listener and its delayed disarm must not outlive the activity (they
+        // capture `sink`/`contentRect` state and drive layout side effects on the next pass).
+        settledReapplyListener?.let { listener ->
+            (videoView ?: fallbackVideoView)?.let { runCatching { it.removeOnLayoutChangeListener(listener) } }
+        }
+        settledReapplyListener = null
+        settledReapplyDisarm?.let { disarm ->
+            (videoView ?: fallbackVideoView)?.let { runCatching { it.removeCallbacks(disarm) } }
+        }
+        settledReapplyDisarm = null
+        // Everything else posted to this private Handler (the per-second stage tick, the
+        // fullscreen re-assert lambdas, the delayed reconnects) is anonymous and cannot be
+        // removed by name; the activity is going away, so drop the lot. Named entries above
+        // are already cleared — this is the safety net that keeps destroyed-state callbacks
+        // from touching null views.
+        mainHandler.removeCallbacksAndMessages(null)
         super.onDestroy()
     }
 
@@ -5209,11 +5249,20 @@ class CarPlayHostActivity : ComponentActivity() {
      * fit the picture to the size the window just left — the picture then stays
      * letterboxed at the shrunken size until the process restarts (issue #290).
      */
+    private var reapplyGeneration = 0
+    private var settledReapplyListener: View.OnLayoutChangeListener? = null
+    private var settledReapplyDisarm: Runnable? = null
+
     private fun reapplyVideoLayout() {
         val view = videoView ?: return
         updateVideoLayout(view.width, view.height)
+        // Issue #290's settle pass runs on every layout change for up to 3 s; a surface
+        // rebuild can trigger this several times in that window. Bump the generation so
+        // superseded passes no-op instead of stacking listeners and layout side effects.
+        reapplyGeneration += 1
+        val generation = reapplyGeneration
         view.post {
-            if (isDestroyed || videoView !== view) return@post
+            if (isDestroyed || videoView !== view || generation != reapplyGeneration) return@post
             updateVideoLayout(view.width, view.height)
             // Issue #290: the recompute left no trace in a report, so a retest
             // could not prove whether it ran. Log the settled view size and the
@@ -5223,7 +5272,7 @@ class CarPlayHostActivity : ComponentActivity() {
                 "Display: video layout reapplied view=${view.width}x${view.height} " +
                     "content=${content.width.toInt()}x${content.height.toInt()}",
             )
-            armSettledVideoReapply(view)
+            armSettledVideoReapply(view, generation)
         }
     }
 
@@ -5238,14 +5287,22 @@ class CarPlayHostActivity : ComponentActivity() {
      * size never recomputed — the stuck small canvas behind the reverse
      * black border and the first-entry bottom bar.)
      */
-    private fun armSettledVideoReapply(view: View) {
+    private fun armSettledVideoReapply(view: View, generation: Int) {
+        // Re-arm, do not stack: each re-entry drops the previous listener and its
+        // delayed disarm, so a rebuild cycle cannot leave N listeners each driving
+        // updateVideoLayout (and the fallback's layoutParams/setFixedSize side effects).
+        settledReapplyListener?.let { runCatching { view.removeOnLayoutChangeListener(it) } }
+        settledReapplyDisarm?.let { runCatching { view.removeCallbacks(it) } }
         val listener = object : View.OnLayoutChangeListener {
             override fun onLayoutChange(
                 changedView: View, left: Int, top: Int, right: Int, bottom: Int,
                 oldLeft: Int, oldTop: Int, oldRight: Int, oldBottom: Int,
             ) {
                 if ((right - left) == (oldRight - oldLeft) && (bottom - top) == (oldBottom - oldTop)) return
-                if (isDestroyed || videoView !== changedView) return
+                if (isDestroyed || videoView !== changedView || generation != reapplyGeneration) {
+                    runCatching { changedView.removeOnLayoutChangeListener(this) }
+                    return
+                }
                 updateVideoLayout(changedView.width, changedView.height)
                 val content = contentRect(changedView.width, changedView.height)
                 appendLog(
@@ -5255,8 +5312,17 @@ class CarPlayHostActivity : ComponentActivity() {
                 sink?.refreshPicture(SCREEN_TYPE_MAIN)
             }
         }
+        settledReapplyListener = listener
         view.addOnLayoutChangeListener(listener)
-        view.postDelayed({ runCatching { view.removeOnLayoutChangeListener(listener) } }, 3_000L)
+        val disarm = object : Runnable {
+            override fun run() {
+                runCatching { view.removeOnLayoutChangeListener(listener) }
+                if (settledReapplyListener === listener) settledReapplyListener = null
+                if (settledReapplyDisarm === this) settledReapplyDisarm = null
+            }
+        }
+        settledReapplyDisarm = disarm
+        view.postDelayed(disarm, 3_000L)
     }
 
     private fun revealDockTemporarily(view: View) {
@@ -6103,17 +6169,25 @@ class CarPlayHostActivity : ComponentActivity() {
     }
 
     private fun formattedLogLine(message: String, nowMillis: Long): String =
-        "${SimpleDateFormat("HH:mm:ss.SSS", Locale.US).format(Date(nowMillis))}  $message"
+        "${LOG_TIME_FORMAT.get()!!.format(Date(nowMillis))}  $message"
 
     private fun initializeSessionLog() {
         val logFile = File(File(filesDir, "logs"), "diplay.log")
         val activeLog = SessionLogFile(logFile)
-        runCatching {
-            activeLog.reset(
-                "DiPlay log started " +
-                    "${SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(Date())} " +
-                    "pid=${Process.myPid()} path=${logFile.absolutePath}",
-            )
+        // Rotate/rewrite only when this log was not already started by this process: every
+        // recreate (language/density) used to wipe the live diagnostic log the user was
+        // about to export. Keyed on the pid stamp rather than a static flag so a fresh log
+        // file (a new test directory, a cleared cache) is still created and seeded.
+        val alreadyOurs = logFile.isFile &&
+            runCatching { logFile.readText().contains("pid=${Process.myPid()}") }.getOrDefault(false)
+        if (!alreadyOurs) {
+            runCatching {
+                activeLog.reset(
+                    "DiPlay log started " +
+                        "${LOG_TIME_FORMAT.get()!!.format(Date())} " +
+                        "pid=${Process.myPid()} path=${logFile.absolutePath}",
+                )
+            }
         }
         sessionLog = activeLog
         crashDiagnosticLog = activeLog
@@ -6292,6 +6366,10 @@ class CarPlayHostActivity : ComponentActivity() {
     private companion object {
         const val SIDE_PANEL_REFRESH_MILLIS = 5_000L
         const val TAG = "xcertplay-usb"
+        /** Per-thread formatter: appendLog runs on the main thread, crash records do not. */
+        private val LOG_TIME_FORMAT = object : ThreadLocal<java.text.SimpleDateFormat>() {
+            override fun initialValue() = java.text.SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
+        }
         const val SCREEN_TYPE_MAIN = 110
         const val SCREEN_TYPE_ALT = 111
         // On the teardown thread: bounded sequencing wait. Release notification retains ownership beyond

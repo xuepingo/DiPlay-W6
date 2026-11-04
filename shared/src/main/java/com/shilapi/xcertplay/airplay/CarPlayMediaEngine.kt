@@ -113,6 +113,20 @@ class CarPlayMediaEngine(
      * is module-scoped, so an internal member here is invisible there. */
     var videoRecoveryAction: (() -> Unit)? = null
 
+    /**
+     * The engine is created per controller and holds a single-thread scheduler whose core
+     * thread never times out. Without this the scheduler (and the sessions its pending reaps
+     * reference) leaks one thread per reconnect — see the controller's close().
+     */
+    override fun close() {
+        synchronized(screenReapLock) {
+            screenReapTokens.clear()
+            pendingScreenReaps.values.forEach { it.cancel(false) }
+            pendingScreenReaps.clear()
+        }
+        screenReapScheduler.shutdownNow()
+    }
+
     private class BufferedStream(val stream: BufferedAudioStream, val connectionId: Any?)
 
     // The sink has one type-103 renderer, even while old control sessions remain connected.

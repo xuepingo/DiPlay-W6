@@ -47,6 +47,8 @@ class AudioStream(
     private val receivedPackets = AtomicInteger()
     private val decryptedPackets = AtomicInteger()
     private val authenticationFailures = AtomicInteger()
+    private val consecutiveSocketFailures = java.util.concurrent.atomic.AtomicLong()
+    private val consecutiveControlFailures = java.util.concurrent.atomic.AtomicLong()
     private var dataSocket: DatagramSocket? = null
     private var controlSocket: DatagramSocket? = null
     private var dataThread: Thread? = null
@@ -78,8 +80,11 @@ class AudioStream(
 
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
-        dataSocket?.close()
-        controlSocket?.close()
+        // Per-socket try/catch: a customized head-unit runtime can throw from close()
+        // (see the safeClose notes in AirPlaySession), and skipping the rest of teardown
+        // would leave the peer socket and both receive threads behind.
+        runCatching { dataSocket?.close() }
+        runCatching { controlSocket?.close() }
         dataThread?.interrupt()
         controlThread?.interrupt()
     }
@@ -93,8 +98,16 @@ class AudioStream(
                 try {
                     stats.reading()
                     socket.receive(packet)
-                } catch (_: Exception) {
+                    consecutiveSocketFailures.set(0)
+                } catch (error: Exception) {
                     if (closed.get()) return
+                    val failures = consecutiveSocketFailures.incrementAndGet()
+                    // A dead socket used to fail here silently forever ("picture but no
+                    // sound, never recovers"). Make the failure visible in the report
+                    // without tearing the stream down on a transient error.
+                    if (failures == 1L || failures % 250L == 0L) {
+                        onDiagnostic("Audio UDP receive failing type=$streamType consecutive=$failures last=${error.javaClass.simpleName}")
+                    }
                     // Back off instead of spinning: a persistently failing socket would
                     // otherwise burn a core in this loop.
                     try {
@@ -186,8 +199,13 @@ class AudioStream(
         while (!closed.get()) {
             try {
                 socket.receive(DatagramPacket(buffer, buffer.size))
-            } catch (_: Exception) {
+                consecutiveControlFailures.set(0)
+            } catch (error: Exception) {
                 if (closed.get()) return
+                val failures = consecutiveControlFailures.incrementAndGet()
+                if (failures == 1L || failures % 250L == 0L) {
+                    onDiagnostic("Audio RTCP receive failing type=$streamType consecutive=$failures last=${error.javaClass.simpleName}")
+                }
                 // Back off instead of spinning on a persistently failing socket.
                 try {
                     Thread.sleep(20)

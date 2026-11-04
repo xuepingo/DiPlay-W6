@@ -73,7 +73,8 @@ internal class AudioFocusCoordinator(
     /** Wall clock of the last announcement-channel PCM write; only read by the release check. */
     @Volatile private var lastAnnouncementNanos = 0L
     @Volatile private var announcementTimerArmed = false
-    private var closed = false
+    /** Written under the lock, but read unlocked from the PCM writer's early-out. */
+    @Volatile private var closed = false
     /**
      * Set on a transient loss/duck (with the generation that raised it), cleared by GAIN,
      * an empty active set, or close — lets mute recovery wait out long interruptions
@@ -209,8 +210,9 @@ internal class AudioFocusCoordinator(
         active.clear()
         announcementDucking = false
         announcementChannel = null
+        volumeRampTarget = FULL_VOLUME
         refreshRequest()
-        // Drop pending idle-release / mute-recovery / announcement-release callbacks so
+        // Drop pending idle-release / mute-recovery / announcement-release / ramp callbacks so
         // nothing fires after teardown. Only touch the Handler when something is queued
         // (plain unit tests have no Looper).
         if (muteRecoveryScheduled || idleTimerArmed || announcementTimerArmed || volumeRampRunning) {
@@ -228,6 +230,8 @@ internal class AudioFocusCoordinator(
             focusGeneration += 1
             focusVolume = FULL_VOLUME
             mediaVolume = FULL_VOLUME
+            cancelVolumeRampLocked()
+            volumeRampTarget = FULL_VOLUME
             // The last track is gone: any transient-yield mute dies with it, so a later
             // acquisition starts unmuted and a queued stale GAIN has nothing to protect.
             transientYieldActive = false
@@ -366,7 +370,13 @@ internal class AudioFocusCoordinator(
      */
     private fun setFocusVolume(volume: Float) {
         focusVolume = volume
-        setMediaVolume(if (announcementDucking) minOf(volume, DUCKED_VOLUME) else volume)
+        // A focus change is authoritative and must land now: any in-flight duck ramp is
+        // retargeted to this value (and dropped, since we set it synchronously), or the ramp
+        // would walk the volume back to its stale target over the next few hundred ms —
+        // restoring music over a transient-loss mute, which this method's contract forbids.
+        cancelVolumeRampLocked()
+        volumeRampTarget = if (announcementDucking) minOf(volume, DUCKED_VOLUME) else volume
+        setMediaVolume(volumeRampTarget)
     }
 
     /**
@@ -396,6 +406,10 @@ internal class AudioFocusCoordinator(
             if (announcementTimerArmed) return
             announcementTimerArmed = true
         }
+        // Re-arm only after dropping any queued release: the release runnable clears the
+        // armed flag at its start, so an interleaved recheck and a new frame could otherwise
+        // both post and end up with two independent release chains.
+        idleHandler.removeCallbacks(announcementRelease)
         idleHandler.postDelayed(announcementRelease, ANNOUNCEMENT_RELEASE_MILLIS)
     }
 
@@ -419,6 +433,7 @@ internal class AudioFocusCoordinator(
                 return@Runnable
             }
         }
+        idleHandler.removeCallbacks(announcementRelease)
         idleHandler.postDelayed(announcementRelease, recheckMillis)
     }
 
@@ -429,25 +444,44 @@ internal class AudioFocusCoordinator(
 
     /** Ramp toward [target] over ~500 ms instead of jumping (duck engage/release). */
     private fun smoothVolumeTo(target: Float) {
-        if (mediaVolume == target) return
         volumeRampTarget = target
+        if (mediaVolume == target) {
+            // Already there. Still clear any running ramp: a release ramp retargeted to the
+            // current (still-ducked) value must not keep walking toward its previous target,
+            // or a re-engage during the release window silently loses the duck.
+            cancelVolumeRampLocked()
+            return
+        }
         if (volumeRampRunning) return
         volumeRampRunning = true
         idleHandler.post(volumeRampStep)
     }
 
+    /** Drops the ramp callback and its running flag. Caller holds the lock. */
+    private fun cancelVolumeRampLocked() {
+        volumeRampRunning = false
+        idleHandler.removeCallbacks(volumeRampStep)
+    }
+
     private val volumeRampStep = object : Runnable {
         override fun run() {
-            if (closed) { volumeRampRunning = false; return }
-            val current = mediaVolume
-            val target = volumeRampTarget
-            val step = (target - current) * VOLUME_RAMP_STEP_FRACTION
-            val next = if (kotlin.math.abs(target - current) < VOLUME_RAMP_MIN_DELTA) target else current + step
-            setMediaVolume(next)
-            if (next == target) {
-                volumeRampRunning = false
-            } else {
-                idleHandler.postDelayed(this, VOLUME_RAMP_STEP_MILLIS)
+            // Holds the same lock as every other volume writer: `active` is a plain
+            // LinkedHashMap that acquire/release mutate from the audio thread.
+            synchronized(this@AudioFocusCoordinator) {
+                if (closed) {
+                    volumeRampRunning = false
+                    return
+                }
+                val current = mediaVolume
+                val target = volumeRampTarget
+                val step = (target - current) * VOLUME_RAMP_STEP_FRACTION
+                val next = if (kotlin.math.abs(target - current) < VOLUME_RAMP_MIN_DELTA) target else current + step
+                setMediaVolume(next)
+                if (next == target) {
+                    volumeRampRunning = false
+                } else {
+                    idleHandler.postDelayed(this, VOLUME_RAMP_STEP_MILLIS)
+                }
             }
         }
     }
@@ -462,6 +496,7 @@ internal class AudioFocusCoordinator(
     private val muteRecovery: Runnable = Runnable {
         synchronized(this) {
             muteRecoveryScheduled = false
+            if (closed) return@Runnable
             if (mediaVolume >= FULL_VOLUME || active.isEmpty()) {
                 transientYieldActive = false
                 transientYieldGeneration = Long.MIN_VALUE
@@ -1286,6 +1321,8 @@ private class VideoDecoder(
     private val onExit: (VideoDecoder) -> Unit = {},
 ) : Closeable {
     private val pacer = FramePacer()
+    /** Reused per dequeue; one decoder worker thread owns this instance. */
+    private val outputBufferInfo = MediaCodec.BufferInfo()
     private val pacingDelay = if (pacingDelayNanos > 0) PacingDelay(pacingDelayNanos) else null
     // Per queued presentation time (decode thread only): when it was queued, and whether it is a paced
     // frame's local time rather than the queue time.
@@ -1977,7 +2014,7 @@ private class VideoDecoder(
         queuedPresentationUs.indices.firstOrNull { queuedPresentationUs[it] == presentationUs } ?: -1
 
     private fun drainOutput(codec: MediaCodec) {
-        val info = MediaCodec.BufferInfo()
+        val info = outputBufferInfo
         while (running) {
             val index = codec.dequeueOutputBuffer(info, 0)
             when {
@@ -2134,6 +2171,8 @@ private class AudioRenderer(
     private data class AudioPacket(val rtp: ByteArray, val sample: Int)
 
     private val pcmChannels = if (format.channels >= 2) 2 else 1
+    /** Reused per dequeue; one audio worker thread owns this instance. */
+    private val outputBufferInfo = MediaCodec.BufferInfo()
     private val voiceFilter = if (voiceFilter && format.sampleRate > 0) VoiceFilter(format.sampleRate, pcmChannels) else null
 
     // Keep absent framework types out of Dalvik's erased lambda/field casts on KitKat.
@@ -2766,7 +2805,13 @@ private class AudioRenderer(
         val rtp = packet.rtp
         val timestampUs = sampleTimestampUs(packet.sample)
         when (format.codec) {
-            AudioCodecKind.LPCM -> writePcm(byteSwapS16(rtp.copyOfRange(12, rtp.size)))
+            AudioCodecKind.LPCM -> {
+                // The packet buffer is ours for the duration of this call (one AudioPacket
+                // per RTP datagram), and byteSwapS16 is in-place, so the payload can be
+                // swapped and written through without the per-packet copyOfRange copy.
+                byteSwapS16(rtp, RTP_HEADER_BYTES, rtp.size - RTP_HEADER_BYTES)
+                writePcm(rtp, RTP_HEADER_BYTES, rtp.size - RTP_HEADER_BYTES)
+            }
             AudioCodecKind.AAC_LC -> {
                 val accessUnit = rtp.copyOfRange(12, rtp.size)
                 if (accessUnit.isNotEmpty()) {
@@ -2864,7 +2909,7 @@ private class AudioRenderer(
 
     private fun drainCodec(codec: MediaCodec) {
         diagnosticStage = "decoder-output"
-        val info = MediaCodec.BufferInfo()
+        val info = outputBufferInfo
         while (running) {
             diagnosticStage = "decoder-output"
             val index = codec.dequeueOutputBuffer(info, 0)
@@ -3002,7 +3047,8 @@ private class AudioRenderer(
                     report("Audio: legacy output state " + audioFocusCoordinator.legacyOutputSnapshot(streamSnapshot))
                 }
             }
-            maxWriteMs = maxOf(maxWriteMs, (System.nanoTime() - writeStarted) / 1_000_000L)
+            val writeEndedNanos = System.nanoTime()
+            maxWriteMs = maxOf(maxWriteMs, (writeEndedNanos - writeStarted) / 1_000_000L)
             if (count < 0) {
                 writeErrorsThisWindow++
                 lastWriteErrorCode = count
@@ -3018,17 +3064,11 @@ private class AudioRenderer(
             // the window peak so the next report can tell silence from sound.
             pcmPeakThisWindow = maxOf(pcmPeakThisWindow, pcm16Peak(data, offset + written, count))
             written += count
-            // Keeps the focus lease alive only while audio is actually flowing.
-            audioFocusCoordinator.onPcmRendered()
-            // Issue #364: announcement frame activity drives the active-duck
-            // experiment; the coordinator ignores media frames and stays
-            // inert while the setting is off.
-            mappedChannel?.let(audioFocusCoordinator::onAnnouncementFrame)
             val framesWritten = count / frameBytes
             totalWrittenFrames += framesWritten
             writtenFramesThisWindow += framesWritten
             bufferProgress.written(count)
-            lastPcmWriteNs = System.nanoTime()
+            lastPcmWriteNs = writeEndedNanos
             if (!playbackStarted) {
                 prebufferBytes += count
                 if (prebufferBytes >= startThresholdBytes) {
@@ -3044,6 +3084,13 @@ private class AudioRenderer(
                 }
                 reference.append(data, offset + written - count, count, pcmChannels, pending, System.nanoTime())
             }
+        }
+        // Focus lease and announcement activity are per-packet signals; calling them per
+        // 2 KB chunk took the coordinator lock twice per chunk for no extra information
+        // (the windows they gate are 10 s idle / frame activity, not per-chunk).
+        if (written > 0) {
+            audioFocusCoordinator.onPcmRendered()
+            mappedChannel?.let(audioFocusCoordinator::onAnnouncementFrame)
         }
     }
 
@@ -3154,11 +3201,14 @@ private class AudioRenderer(
         }
     }
 
-    private fun byteSwapS16(source: ByteArray): ByteArray {
-        for (index in 0 until source.size - 1 step 2) {
+    private fun byteSwapS16(source: ByteArray, offset: Int = 0, length: Int = source.size - offset): ByteArray {
+        var index = offset
+        val end = offset + length - 1
+        while (index < end) {
             val tmp = source[index]
             source[index] = source[index + 1]
             source[index + 1] = tmp
+            index += 2
         }
         return source
     }
@@ -3232,6 +3282,8 @@ private class AudioRenderer(
         // Holds a burst after a Wi-Fi gap (~4 s of AAC) instead of dropping it.
         const val MAX_QUEUED_PACKETS = 192
         const val PREBUFFER_WRITE_CHUNK_BYTES = 2 * 1024
+        /** Standard RTP fixed header length; the encrypted payload follows it. */
+        const val RTP_HEADER_BYTES = 12
         const val STATS_TAG = "DiPlay-AudioStats"
         const val STATS_WINDOW_NS = 5_000_000_000L
         const val DECODED_BUFFER_LOG_INTERVAL = 50

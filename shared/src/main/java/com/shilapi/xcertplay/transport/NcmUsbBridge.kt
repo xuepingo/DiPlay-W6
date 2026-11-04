@@ -40,6 +40,8 @@ class NcmUsbBridge internal constructor(
     private val stateLock = Any()
     private val readLock = Any()
     private val writeLock = Any()
+    /** Written under [stateLock], but read unsynchronized by the write-watchdog loop. */
+    @Volatile
     private var closed = false
     @Volatile
     private var isAbortedOrDetached = false
@@ -55,6 +57,7 @@ class NcmUsbBridge internal constructor(
     @Volatile private var writeInFlightSinceNs = 0L
     private val writeWatchdogStarted = AtomicBoolean(false)
     private val writeWatchdogFired = AtomicBoolean(false)
+    private var writeWatchdogThread: Thread? = null
     private var inboundFrameSeen = false
     private var consecutiveWriteFailures = 0
     /** Issue #352-Q4 & #368: bulk-OUT queue-vs-wire split (frames in, chunks out, bytes out). */
@@ -233,7 +236,7 @@ class NcmUsbBridge internal constructor(
      */
     private fun ensureWriteWatchdog() {
         if (!writeWatchdogStarted.compareAndSet(false, true)) return
-        Thread({
+        writeWatchdogThread = Thread({
             while (!closed) {
                 try {
                     Thread.sleep(WATCHDOG_POLL_MILLIS)
@@ -254,7 +257,7 @@ class NcmUsbBridge internal constructor(
                 runCatching { sharedConnection.frameworkConnection?.close() }
                 break
             }
-        }, "ncm-write-watchdog").apply { isDaemon = true; start() }
+        }, "ncm-write-watchdog").apply { isDaemon = true; writeWatchdogThread = this; start() }
     }
 
     /**
@@ -298,6 +301,19 @@ class NcmUsbBridge internal constructor(
                 Thread.currentThread().interrupt()
             }
         }
+        // Same treatment for the write watchdog: it polls `closed` on its own thread and
+        // sleeps, so it must be interrupted to wake (a plain `closed = true` is not enough
+        // for a thread parked in sleep) and joined, or it outlives the bridge holding the
+        // direct read buffer and the shared USB connection.
+        writeWatchdogThread?.let { thread ->
+            thread.interrupt()
+            try {
+                thread.join(WATCHDOG_POLL_MILLIS + 250L)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
+        }
+        writeWatchdogThread = null
         if (!isAbortedOrDetached) synchronized(readLock) {
             synchronized(writeLock) {
                 if (!isAbortedOrDetached) {

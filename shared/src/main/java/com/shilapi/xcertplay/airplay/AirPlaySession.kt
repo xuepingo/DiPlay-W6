@@ -62,6 +62,8 @@ interface AirPlayMediaHandler {
     fun onSessionClosed(session: AirPlaySession) {}
     fun setIapTunnelHandler(handler: ((BlockingDuplexByteStream) -> Boolean)?) {}
     fun onSetupResponseSent(session: AirPlaySession) {}
+    /** Releases the handler's own threads/executors when the controller tears down. */
+    fun close() {}
 }
 
 /**
@@ -82,7 +84,6 @@ class AirPlaySession(
     internal val pairSetup = PairSetup(identity, pairings)
     internal val pairVerify = PairVerify(identity, pairings)
     internal var cipher: ControlCipher? = null
-    internal var encBuf = ByteArray(0)
     internal var deviceBtMac = ""
     internal val activeStreams = linkedSetOf<Int>()
 
@@ -489,7 +490,11 @@ class AirPlaySession(
         com.shilapi.xcertplay.network.TcpLiveness.configure(socket) { debugLog(it) }
         val input = BufferedInputStream(socket.getInputStream())
         val output = BufferedOutputStream(socket.getOutputStream())
-        var accumulated = ByteArray(0)
+        // Grow-only accumulators: `byteArray += chunk` copies the whole accumulated buffer on
+        // every read (O(n²) over a fragmented request) and can grow without bound on a bad
+        // peer. A ByteArrayOutputStream appends amortised and is capped by maxControlBuffer().
+        val encAcc = java.io.ByteArrayOutputStream()
+        val acc = java.io.ByteArrayOutputStream()
         val buffer = ByteArray(READ_CHUNK_BYTES)
         var closeReason = "session closed"
         try {
@@ -502,20 +507,27 @@ class AirPlaySession(
                 var plaintext = buffer.copyOf(count)
                 val activeCipher = cipher
                 if (activeCipher != null) {
-                    encBuf += plaintext
-                    val decrypted = try {
-                        activeCipher.decrypt(encBuf)
-                    } catch (error: Exception) {
-                        closeReason = "control decrypt failed: ${error.message ?: error.javaClass.simpleName}"
-                        Log.e(TAG, "airplay $closeReason encrypted=${encBuf.size}", error)
+                    encAcc.write(plaintext, 0, plaintext.size)
+                    if (encAcc.size() > MAX_CONTROL_BUFFER_BYTES) {
+                        closeReason = "control decrypt buffer overflow ${encAcc.size()}"
+                        Log.e(TAG, "airplay $closeReason")
                         break
                     }
-                    encBuf = decrypted.rest
+                    val decrypted = try {
+                        activeCipher.decrypt(encAcc.toByteArray())
+                    } catch (error: Exception) {
+                        closeReason = "control decrypt failed: ${error.message ?: error.javaClass.simpleName}"
+                        Log.e(TAG, "airplay $closeReason encrypted=${encAcc.size()}", error)
+                        break
+                    }
+                    encAcc.reset()
+                    encAcc.write(decrypted.rest, 0, decrypted.rest.size)
                     plaintext = decrypted.data
                 }
-                accumulated += plaintext
-                val parsed = RtspMessage.parseMessages(accumulated)
-                accumulated = parsed.rest
+                acc.write(plaintext, 0, plaintext.size)
+                val parsed = RtspMessage.parseMessages(acc.toByteArray())
+                acc.reset()
+                acc.write(parsed.rest, 0, parsed.rest.size)
                 for (request in parsed.messages) {
                     val cseq = request.headers["cseq"] ?: "-"
                     val path = request.path.lowercase()
@@ -934,6 +946,14 @@ class AirPlaySession(
                 socket.receive(DatagramPacket(buffer, buffer.size))
             } catch (_: Exception) {
                 if (closed.get()) return
+                // Back off instead of spinning: a socket that keeps failing (closed by the
+                // ROM, interface gone) would otherwise burn a core here — the same guard the
+                // audio and RTCP receive loops already use.
+                try {
+                    Thread.sleep(20)
+                } catch (_: InterruptedException) {
+                    return
+                }
             }
         }
     }
@@ -970,8 +990,25 @@ class AirPlaySession(
     }
 
     private fun acceptEvent(server: ServerSocket) {
-        try {
-            val socket = server.accept()
+        while (!closed.get()) {
+            // Give the iPhone a grace window to re-establish a dropped event link instead of
+            // tearing the whole session down on the first blip. A timeout here means no
+            // reconnect arrived, which is the point where a session rebuild is the only way
+            // HID input comes back.
+            server.soTimeout = EVENT_ACCEPT_GRACE_MILLIS.toInt()
+            val socket = try {
+                server.accept()
+            } catch (error: java.net.SocketTimeoutException) {
+                if (!closed.get()) {
+                    Log.w(TAG, "airplay event not re-established within ${EVENT_ACCEPT_GRACE_MILLIS}ms; closing session")
+                    close()
+                }
+                return
+            } catch (error: Exception) {
+                if (!closed.get()) Log.e(TAG, "airplay event accept failed", error)
+                return
+            }
+            server.soTimeout = 0
             socket.setSoLinger(true, 0)
             // Avoid Nagle coalescing on this interactive event connection: small HID/event writes
             // need not wait for earlier unacknowledged data.
@@ -1005,11 +1042,6 @@ class AirPlaySession(
             debugLog("airplay video event ready availability=$videoDelivery")
             reapplyClusterContent()
             runEventRead(socket)
-        } catch (error: Exception) {
-            if (!closed.get()) {
-                Log.e(TAG, "airplay event accept failed", error)
-                close()
-            }
         }
     }
 
@@ -1017,24 +1049,30 @@ class AirPlaySession(
         try {
             val input = BufferedInputStream(socket.getInputStream())
             val output = BufferedOutputStream(socket.getOutputStream())
-            var encrypted = ByteArray(0)
-            var plaintext = ByteArray(0)
+            val encAcc = java.io.ByteArrayOutputStream()
+            val acc = java.io.ByteArrayOutputStream()
             val buffer = ByteArray(READ_CHUNK_BYTES)
             while (!closed.get()) {
                 val count = input.read(buffer)
                 if (count < 0) break
                 val cipher = eventCipher ?: break
-                encrypted += buffer.copyOf(count)
-                val decrypted = try {
-                    cipher.decrypt(encrypted)
-                } catch (error: Exception) {
-                    Log.e(TAG, "airplay event decrypt failed encrypted=${encrypted.size}", error)
+                encAcc.write(buffer, 0, count)
+                if (encAcc.size() > MAX_CONTROL_BUFFER_BYTES) {
+                    Log.e(TAG, "airplay event decrypt buffer overflow ${encAcc.size()}")
                     break
                 }
-                encrypted = decrypted.rest
-                plaintext += decrypted.data
-                val parsed = RtspMessage.parseMessages(plaintext)
-                plaintext = parsed.rest
+                val decrypted = try {
+                    cipher.decrypt(encAcc.toByteArray())
+                } catch (error: Exception) {
+                    Log.e(TAG, "airplay event decrypt failed encrypted=${encAcc.size()}", error)
+                    break
+                }
+                encAcc.reset()
+                encAcc.write(decrypted.rest, 0, decrypted.rest.size)
+                acc.write(decrypted.data, 0, decrypted.data.size)
+                val parsed = RtspMessage.parseMessages(acc.toByteArray())
+                acc.reset()
+                acc.write(parsed.rest, 0, parsed.rest.size)
                 for (message in parsed.messages) {
                     if (message.method.startsWith("RTSP/") || message.method.startsWith("HTTP/")) continue
                     debugLog(
@@ -1060,7 +1098,9 @@ class AirPlaySession(
             if (eventSocket === socket) eventSocket = null
             eventCipher = null
             safeClose(socket)
-            if (!closed.get()) close()
+            // Deliberately no close() here: a dropped event link used to tear down the whole
+            // control session (audio/video included). acceptEvent() loops back to accept a
+            // reconnect on the same port; only the accept timeout or teardown ends the session.
         }
     }
 
@@ -1086,6 +1126,10 @@ class AirPlaySession(
         private val BUFFERED_AUDIO_METHODS = setOf("SETRATE", "SETRATEANCHORTIME", "GETANCHOR", "FLUSHBUFFERED")
 
         const val READ_CHUNK_BYTES = 16 * 1024
+        /** Cap for control/event accumulators: a bad peer must not make them grow forever. */
+        const val MAX_CONTROL_BUFFER_BYTES = 2 * 1024 * 1024
+        /** How long a dropped event link may stay down before the session is rebuilt. */
+        const val EVENT_ACCEPT_GRACE_MILLIS = 15_000L
         const val ZOOM_DIRECTION_IN = 0
         const val ZOOM_DIRECTION_OUT = 1
         const val EVENT_READY_POLL_MILLIS = 25L
@@ -1163,8 +1207,24 @@ internal fun safeClose(socket: DatagramSocket?) {
     }
 }
 
-private fun ByteArray.toHex(): String =
-    joinToString(separator = "") { byte -> "%02x".format(byte.toInt() and 0xff) }
+/**
+ * Table-driven hex dump with a length cap. This runs on the control and HID paths (every
+ * touch report and RTSP frame traces its body), so the per-byte `%02x` formatting and
+ * unbounded output were real per-packet cost; the cap keeps the diagnostic readable too.
+ */
+private fun ByteArray.toHex(): String {
+    val shown = minOf(size, HEX_DUMP_MAX_BYTES)
+    val sb = StringBuilder(shown * 2 + 16)
+    for (i in 0 until shown) {
+        val b = this[i].toInt() and 0xff
+        sb.append(HEX_DIGITS[b ushr 4]).append(HEX_DIGITS[b and 0x0f])
+    }
+    if (shown < size) sb.append("…(").append(size).append("B)")
+    return sb.toString()
+}
+
+private val HEX_DIGITS = "0123456789abcdef".toCharArray()
+private const val HEX_DUMP_MAX_BYTES = 256
 
 private fun asMap(value: Any?): Map<String, Any?>? {
     val map = value as? Map<*, *> ?: return null

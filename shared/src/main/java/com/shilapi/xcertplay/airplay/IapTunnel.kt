@@ -34,7 +34,13 @@ class IapTunnel(
     private val bindAddress =
         if (bindAddress is Inet4Address) InetAddress.getByName("0.0.0.0") else bindAddress
     private val servers = mutableListOf<ServerSocket>()
-    private var socket: Socket? = null
+    /**
+     * Every accepted connection, not just the last one. The dual-stack setup runs two accept
+     * loops over the same port; each can land a live connection, and close() must reach all of
+     * them or the still-blocked readers (interrupt does not wake a socket read) leak their fd
+     * and thread until the process dies.
+     */
+    private val activeSockets = java.util.Collections.synchronizedSet(mutableSetOf<Socket>())
     private val threads = mutableListOf<Thread>()
     private val peerConnected = CountDownLatch(1)
     @Volatile private var listener: Listener = object : Listener {}
@@ -82,7 +88,8 @@ class IapTunnel(
 
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
-        safeClose(socket)
+        activeSockets.toList().forEach(::safeClose)
+        activeSockets.clear()
         servers.toList().forEach(::safeClose)
         servers.clear()
         threads.toList().forEach(Thread::interrupt)
@@ -117,7 +124,7 @@ class IapTunnel(
                 return
             }
             accepted.setSoLinger(true, 0)
-            socket = accepted
+            activeSockets.add(accepted)
             readCounter.set(0)
             peerConnected.countDown()
             listener.onOpen(accepted.remoteSocketAddress?.toString())
@@ -152,7 +159,7 @@ class IapTunnel(
         } catch (error: Exception) {
             failure = error
         } finally {
-            if (socket === sock) socket = null
+            activeSockets.remove(sock)
             safeClose(sock)
             if (!closed.get() && failure != null) listener.onClosed(failure)
         }
