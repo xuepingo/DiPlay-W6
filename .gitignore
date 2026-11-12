@@ -38,6 +38,13 @@ release-signing.properties
 *.p7b
 *.p12
 *.pfx
+
+# Reverse-engineering samples and local build artifacts (not used by the build).
+# c2.bin / c3.bin are extracted DEX dumps kept locally for analysis only.
+/c2.bin
+/c3.bin
+*.apk
+runtime-assets/
 *.pem
 *.key
 *.apk
