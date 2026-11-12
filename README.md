@@ -391,6 +391,17 @@ runtime-assets/offline-mfi/
 
 需要看到 **V2 签名验证通过**。debug 包用 Android 默认 debug keystore 签名。
 
+### 5.5 关于 CI
+
+上游仓库自带的 4 个 GitHub Actions 工作流（`android.yml` / `pages.yml` / `verify-release-apk-version.yml` / `verify-release-signature.yml`）**没有**放在 `.github/workflows/`，而是作为参考收在 [`docs/ci-examples/`](docs/ci-examples/)。
+
+原因有两个：
+
+- 它们是为上游的 source-only 构建写的（JDK 25 + lint + 单测），不产出带身份的 APK，在本项目的手工构建流程下推上去只会长期报红；
+- 提交 `.github/workflows/` 需要 OAuth token 具备 `workflow` scope，本仓库的发布流程用不到它。
+
+想启用 CI 的话，把需要的文件复制回 `.github/workflows/` 再提交即可（届时需给 token 补 `workflow` 权限）。
+
 ---
 
 ## 6. 已知限制
@@ -439,10 +450,12 @@ shilapi/xcertplay                    GPL-3.0     接收器核心
         ↓
 shihabal3amri/DiPlay                 GPL-3.0     加入 DiAuto 风格界面
         ↓  界面部分源自 shihabal3amri/DiAuto  AGPL-3.0
-programmerguohuajing/DiPlay-Legacy-Android       旧版 Android 兼容重构
+programmerguohuajing/DiPlay-Legacy-Android       旧版 Android 兼容重构（原仓库已不可访问）
         ↓
 本仓库（威马 W6 适配分支）             GPL-3.0
 ```
+
+> **关于提交历史**：`programmerguohuajing/DiPlay-Legacy-Android` 已被删除或转为私有（GitHub 返回 404），本项目是在该仓库尚可用时浅克隆拉取的。浅克隆缺少早期祖先对象，直接推送会被 GitHub 的 `index-pack` 拒绝，因此推送前在对象层重放了一遍历史：**保留了每个提交的作者、时间、提交信息与完整目录树，只有提交 SHA 变化，两个已无法追溯的祖先边界被切断为根提交**。本分支自己的 W6 适配提交（稳定版 1 → 34）全部完整。
 
 原始版权归各作者所有，本分支的修改同样以 GPL-3.0 发布。分发修改版时必须保留全部上游版权声明与许可证文本，详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 与 `docs/licenses/`。
 
@@ -450,7 +463,7 @@ programmerguohuajing/DiPlay-Legacy-Android       旧版 Android 兼容重构
 
 - [shilapi](https://github.com/shilapi/xcertplay) —— xcertplay 接收器核心
 - [shihabal3amri](https://github.com/shihabal3amri) —— DiPlay 与 DiAuto 界面
-- [programmerguohuajing](https://github.com/programmerguohuajing) —— Legacy 分支的旧版 Android 兼容重构，本项目多数上游能力来自这里
+- [programmerguohuajing](https://github.com/programmerguohuajing) —— Legacy 分支的旧版 Android 兼容重构，本项目多数上游能力来自这里（原仓库现已不可访问）
 - 上游 issue 贡献者 —— #290（surface 重建）、#363（Dock 挤压）、#364（播报压低）、#1148（麦克风 MTU）、#275（USB 重枚举）等修复的原始思路
 
 ### 相关文档
