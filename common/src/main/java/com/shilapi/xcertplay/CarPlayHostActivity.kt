@@ -484,7 +484,7 @@ class CarPlayHostActivity : ComponentActivity() {
         legacyReverseResumeAttempts = 0
         if (!reverseCameraActive) {
             reverseCameraActive = true
-            reverseCameraActiveSinceMs = System.currentTimeMillis()
+            reverseCameraActiveSinceMs = SystemClock.elapsedRealtime()
             appendLog("Display: reverse camera started by broadcast source=$source")
         }
         if (!AirPlayPersistence.loadLegacyReverseColdStart(this)) return
@@ -1410,7 +1410,7 @@ class CarPlayHostActivity : ComponentActivity() {
             // post-exit restore runs the same work once the exit is real.
             // The age cap keeps a never-cleared flag (a missed exit
             // broadcast) from gating refreshes forever.
-            val reverseGateAgeMs = System.currentTimeMillis() - reverseCameraActiveSinceMs
+            val reverseGateAgeMs = SystemClock.elapsedRealtime() - reverseCameraActiveSinceMs
             if (reverseCameraActive && reverseGateAgeMs < REVERSE_ACTIVE_GATE_CAP_MILLIS) {
                 appendLog("Display: focus gained while reverse camera is active; fullscreen and picture refresh deferred to reverse exit")
             } else {
@@ -5059,12 +5059,17 @@ class CarPlayHostActivity : ComponentActivity() {
     /**
      * Issue #363: the reporter's discriminator proved the dock bar is
      * dropped by task re-fronting, not by focus gain (focus returns after
-     * every reverse exit and the bar stays). Re-front our own task: the
-     * host is singleTask, so the start delivers onNewIntent to this very
-     * instance and re-fronts its task without ever leaving the CarPlay
-     * screen. Bounded per squeeze episode (3 attempts, 5 s apart) so a
+     * every reverse exit and the bar stays). Bounded per squeeze episode
+     * (3 attempts, 5 s apart) so a
      * launcher that refuses is not fought forever; the episode resets
      * when full height is restored.
+     *
+     * The start target is the launcher activity with NEW_TASK — the exact
+     * form the reporter's manual test proved. The first implementation
+     * re-fronted this host itself with REORDER_TO_FRONT, which the
+     * v0.3.15 retest showed is a no-op: a singleTask host already at the
+     * top of its own task has nothing to reorder, only onNewIntent fires
+     * and the window layer never moves.
      */
     private fun maybeRefrontForDockBar() {
         if (!dockBarRefrontEnabled) return
@@ -5074,11 +5079,11 @@ class CarPlayHostActivity : ComponentActivity() {
         if (dockRefrontAttempts >= 3 || now - dockRefrontLastAttemptMs < 5_000L) return
         dockRefrontAttempts += 1
         dockRefrontLastAttemptMs = now
-        appendLog("Display: dock squeeze detected; bringing the CarPlay task to the front (attempt $dockRefrontAttempts)")
+        appendLog("Display: dock squeeze detected; bringing the app task to the front (attempt $dockRefrontAttempts)")
         runCatching {
             startActivity(
-                Intent(this, CarPlayHostActivity::class.java)
-                    .addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT),
+                Intent(this, DiPlayActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
             )
         }.onFailure { appendLog("Display: task re-front failed: ${it.message}") }
     }
@@ -5088,9 +5093,12 @@ class CarPlayHostActivity : ComponentActivity() {
         val baseline = surfaceReaddBounds ?: return false
         if (bounds.width >= baseline.width || bounds.height >= baseline.height) return false
         if (viewHeight - bounds.height > 1) return false
-        val canvas = activeDisplaySize ?: return false
-        // The squeezed fit keeps the canvas aspect (within rounding).
-        return kotlin.math.abs(bounds.width * canvas.height - bounds.height * canvas.width) <= canvas.height
+        // The squeezed fit keeps the established aspect (within rounding).
+        // Compare against the baseline, not the current display size: a
+        // display-changed callback can rewrite the latter to the squeezed
+        // size before this layout pass runs, which made a canvas-referenced
+        // comparison fail and let the small size through (v0.3.15 retest).
+        return kotlin.math.abs(bounds.width * baseline.height - bounds.height * baseline.width) <= baseline.height
     }
 
     private fun updateVideoLayout(viewWidth: Int, viewHeight: Int) {
@@ -5121,7 +5129,7 @@ class CarPlayHostActivity : ComponentActivity() {
             val readdBounds = surfaceReaddBounds
             if (dockRefrontAttempts > 0 && readdBounds != null &&
                 bounds.height >= readdBounds.height) {
-                appendLog("Display: full height restored after task re-front (attempts=$dockRefrontAttempts)")
+                appendLog("Display: full height restored; dock re-front episode closed (attempts=$dockRefrontAttempts)")
                 dockRefrontAttempts = 0
             }
             val transitionalShrink = fallbackVideoBounds != bounds && isTransitionalShrinkAfterReadd(bounds)
@@ -6084,12 +6092,15 @@ class CarPlayHostActivity : ComponentActivity() {
         latestStage = message
         stageStatusView?.text = if (exact) message else friendlyStage(message)
         paintWaitingScreen()
-        stageStartedAtMillis = System.currentTimeMillis()
+        // Monotonic, not wall clock: these units boot with unset RTCs
+        // (2018) that jump years when time syncs, and a wall-clock age
+        // turned that into a 278,984,999-second wait on issue #373.
+        stageStartedAtMillis = SystemClock.elapsedRealtime()
         val generation = ++stageWatchdogGeneration
         stageDiagnosticView?.text = "阶段已进入 · 0 秒"
         fun tick() {
             if (generation != stageWatchdogGeneration || shuttingDown.get()) return
-            val elapsed = ((System.currentTimeMillis() - stageStartedAtMillis) / 1000L).coerceAtLeast(0L)
+            val elapsed = ((SystemClock.elapsedRealtime() - stageStartedAtMillis) / 1000L).coerceAtLeast(0L)
             stageDiagnosticView?.text = if (elapsed >= 20L) {
                 "已等待 ${elapsed} 秒 · 请解锁 iPhone，手机弹出「信任/允许 CarPlay」时请点允许；若长期无变化请拍摄此界面"
             } else {

@@ -58,6 +58,11 @@ class NcmUsbBridge internal constructor(
     private val writeWatchdogStarted = AtomicBoolean(false)
     private val writeWatchdogFired = AtomicBoolean(false)
     private var writeWatchdogThread: Thread? = null
+    /** Issue #305: production-stall watchdog (completed-count frozen while failures are pending). */
+    private val stallWatchdogStarted = AtomicBoolean(false)
+    private var stallWatchdogThread: Thread? = null
+    private var stallCompletedSnapshot = -1
+    private var stallSnapshotNs = 0L
     private var inboundFrameSeen = false
     private var consecutiveWriteFailures = 0
     /** Issue #352-Q4 & #368: bulk-OUT queue-vs-wire split (frames in, chunks out, bytes out). */
@@ -117,6 +122,7 @@ class NcmUsbBridge internal constructor(
         }
         val block = Ntb16Codec.build(frame, sequence)
         ensureWriteWatchdog()
+        ensureStallWatchdog()
         writeInFlightSinceNs = System.nanoTime()
         var failedAfterNanos = 0L
         var errno = 0
@@ -261,6 +267,75 @@ class NcmUsbBridge internal constructor(
     }
 
     /**
+     * Issue #305: the failure ladder in [send] only advances when a
+     * transfer returns, but a wedged data path can stop producing frames
+     * altogether — the reporter's run counted 8 failures, after which no
+     * send was attempted for 45 s while inbound stayed live, so the
+     * reset / re-claim / fail rungs were structurally unreachable and the
+     * session hung silently with a frozen counter. Watch from a side
+     * thread: with the data path live, failures pending and nothing in
+     * flight, if the completed count does not move for a full stall
+     * window, production stopping is itself the next failure observation,
+     * so count one more failure through the same rungs.
+     */
+    private fun ensureStallWatchdog() {
+        if (!stallWatchdogStarted.compareAndSet(false, true)) return
+        Thread({
+            while (!closed) {
+                try {
+                    Thread.sleep(WATCHDOG_POLL_MILLIS)
+                } catch (_: InterruptedException) {
+                    break
+                }
+                if (closed) break
+                var failTheSession = false
+                synchronized(writeLock) {
+                    // Only meaningful once the phone has actually produced traffic and a failure is
+                    // already pending: before that, silence is the NAK window, not a stall.
+                    if (closed || !inboundFrameSeen || writeInFlightSinceNs != 0L ||
+                        consecutiveWriteFailures == 0
+                    ) {
+                        stallCompletedSnapshot = -1
+                        return@synchronized
+                    }
+                    val now = System.nanoTime()
+                    if (stallCompletedSnapshot != ncmWriteCompletedChunks) {
+                        stallCompletedSnapshot = ncmWriteCompletedChunks
+                        stallSnapshotNs = now
+                        return@synchronized
+                    }
+                    if (now - stallSnapshotNs < STALL_NANOS) return@synchronized
+                    stallSnapshotNs = now
+                    consecutiveWriteFailures += 1
+                    val stallLine = "ncm bulk-out stalled: no completed transfer for " +
+                        "${STALL_NANOS / 1_000_000_000} s with the data path live; counting failure " +
+                        "$consecutiveWriteFailures/$MAX_CONSECUTIVE_WRITE_FAILURES " +
+                        "ncmCounts=enqueued=$ncmWriteEnqueuedFrames submitted=$ncmWriteSubmittedChunks " +
+                        "completed=$ncmWriteCompletedChunks successBytes=$ncmWriteSuccessBytes"
+                    Log.i(IphoneCarPlayConfiguration.TAG, stallLine)
+                    onDiagnostic(stallLine)
+                    if (consecutiveWriteFailures == INTERFACE_RESET_AT_FAILURE && !interfaceResetAttempted) {
+                        interfaceResetAttempted = true
+                        resetDataInterface()
+                    }
+                    if (consecutiveWriteFailures == INTERFACE_RECLAIM_AT_FAILURE && !interfaceReclaimAttempted) {
+                        interfaceReclaimAttempted = true
+                        reclaimDataInterface()
+                    }
+                    if (consecutiveWriteFailures >= MAX_CONSECUTIVE_WRITE_FAILURES) failTheSession = true
+                }
+                if (failTheSession) {
+                    onDiagnostic("ncm bulk-out stalled through the whole failure ladder; failing the session")
+                    failSession("NCM write stalled through the failure ladder while the data path was live")
+                    markAborted()
+                    runCatching { sharedConnection.frameworkConnection?.close() }
+                    break
+                }
+            }
+        }, "ncm-stall-watchdog").apply { isDaemon = true; stallWatchdogThread = this; start() }
+    }
+
+    /**
      * Returns the next complete Ethernet frame, or null when [timeoutMillis] elapses without one.
      * USB reads may split or coalesce NTB blocks; this method reassembles whole blocks internally.
      */
@@ -314,6 +389,18 @@ class NcmUsbBridge internal constructor(
             }
         }
         writeWatchdogThread = null
+        // The stall watchdog parks in sleep the same way; left alone it would outlive the
+        // bridge holding `writeLock` and the shared connection, which is the same leak the
+        // write watchdog was just given interrupt/join for.
+        stallWatchdogThread?.let { thread ->
+            thread.interrupt()
+            try {
+                thread.join(WATCHDOG_POLL_MILLIS + 250L)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
+        }
+        stallWatchdogThread = null
         if (!isAbortedOrDetached) synchronized(readLock) {
             synchronized(writeLock) {
                 if (!isAbortedOrDetached) {
@@ -804,6 +891,8 @@ class NcmUsbBridge internal constructor(
         private const val MAX_CONSECUTIVE_WRITE_FAILURES = 25
         /** Issue #137: one send may legitimately run to its 2 s deadline; 10 s in flight means wedged. */
         private const val WRITE_WEDGE_NANOS = 10_000_000_000L
+        /** Issue #305: completed-count frozen this long with failures pending counts as another failure. */
+        private const val STALL_NANOS = 10_000_000_000L
         private const val WATCHDOG_POLL_MILLIS = 500L
         /** Issue #279: consecutive failures at which the one-shot interface reset runs. */
         private const val INTERFACE_RESET_AT_FAILURE = 5
