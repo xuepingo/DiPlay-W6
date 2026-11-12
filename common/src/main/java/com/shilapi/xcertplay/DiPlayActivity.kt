@@ -241,6 +241,14 @@ class DiPlayActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Issue #363: a dock re-front only needs this task to reach the front so the window layer
+        // recomputes; showing this screen would cover the projection (and the resume path may not
+        // even hand back when the user last sat on a settings page). Return immediately.
+        if (intent?.getBooleanExtra(EXTRA_DOCK_REFRONT, false) == true) {
+            openProjection()
+            finish()
+            return
+        }
         if (savedInstanceState == null) {
             Thread({ LegacyConnectionProbe.log(applicationContext) }, "DiPlayProbeLog").apply { isDaemon = true }.start()
         }
@@ -303,6 +311,13 @@ class DiPlayActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent); setIntent(intent)
+        // Issue #363: same dock re-front, delivered to the retained instance. Nothing here may
+        // render or resume; give the front back before any of the branches below run.
+        if (intent.getBooleanExtra(EXTRA_DOCK_REFRONT, false)) {
+            openProjection()
+            finish()
+            return
+        }
         connectionSettingsReturnCategory = null
         // CarPlay runs in its own task, so the launcher icon resumes this one. Settings opened from
         // CarPlay carry a "page" extra, which isLauncherIntent rejects.
@@ -3826,6 +3841,14 @@ class DiPlayActivity : ComponentActivity() {
     // Rounded, not truncated: below 160 dpi dp(1) became 0 and every border vanished.
     private fun dp(value: Int) = (value * resources.displayMetrics.density).roundToInt()
     companion object {
+        /**
+         * Issue #363: the CarPlay host re-fronts this task so the head unit recomputes its window
+         * layout. That request must not paint the launcher screen, and it must not run any of the
+         * resume-side work (update check, USB Bluetooth restore, hotspot reminder) — the caller
+         * only wants the task switch, so hand the front straight back to the projection.
+         */
+        const val EXTRA_DOCK_REFRONT = "dock_refront"
+
         internal fun isLauncherIntent(intent: Intent): Boolean =
             intent.action == Intent.ACTION_MAIN && intent.hasCategory(Intent.CATEGORY_LAUNCHER) &&
                 !intent.hasExtra("page")

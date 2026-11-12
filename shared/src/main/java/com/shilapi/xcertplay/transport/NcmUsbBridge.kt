@@ -57,10 +57,11 @@ class NcmUsbBridge internal constructor(
     @Volatile private var writeInFlightSinceNs = 0L
     private val writeWatchdogStarted = AtomicBoolean(false)
     private val writeWatchdogFired = AtomicBoolean(false)
-    private var writeWatchdogThread: Thread? = null
+    /** Read by [close] on the teardown thread; both watchdogs are created on the writer thread. */
+    @Volatile private var writeWatchdogThread: Thread? = null
     /** Issue #305: production-stall watchdog (completed-count frozen while failures are pending). */
     private val stallWatchdogStarted = AtomicBoolean(false)
-    private var stallWatchdogThread: Thread? = null
+    @Volatile private var stallWatchdogThread: Thread? = null
     private var stallCompletedSnapshot = -1
     private var stallSnapshotNs = 0L
     private var inboundFrameSeen = false
@@ -291,14 +292,27 @@ class NcmUsbBridge internal constructor(
                 var failTheSession = false
                 synchronized(writeLock) {
                     // Only meaningful once the phone has actually produced traffic and a failure is
-                    // already pending: before that, silence is the NAK window, not a stall.
-                    if (closed || !inboundFrameSeen || writeInFlightSinceNs != 0L ||
+                    // already pending: before that, silence is the NAK window, not a stall. A
+                    // session already aborted (detach) must not climb the ladder a second time —
+                    // the write watchdog may have taken it there already.
+                    if (closed || isAbortedOrDetached || !inboundFrameSeen || writeInFlightSinceNs != 0L ||
                         consecutiveWriteFailures == 0
                     ) {
                         stallCompletedSnapshot = -1
                         return@synchronized
                     }
                     val now = System.nanoTime()
+                    // "Nothing was queued" is not "production stalled": an idle phone (parked,
+                    // static screen, no touch or audio) legitimately sends nothing, and a single
+                    // NAK timeout before that silence would otherwise walk the whole ladder and
+                    // kill a perfectly healthy session. Require the inbound side to be live in the
+                    // same window — video still arriving while our ACKs are dropped is exactly
+                    // the one-way failure #305 reported.
+                    val lastInbound = lastBulkInSuccessNs
+                    if (lastInbound == 0L || now - lastInbound > STALL_NANOS) {
+                        stallCompletedSnapshot = -1
+                        return@synchronized
+                    }
                     if (stallCompletedSnapshot != ncmWriteCompletedChunks) {
                         stallCompletedSnapshot = ncmWriteCompletedChunks
                         stallSnapshotNs = now
@@ -376,31 +390,23 @@ class NcmUsbBridge internal constructor(
                 Thread.currentThread().interrupt()
             }
         }
-        // Same treatment for the write watchdog: it polls `closed` on its own thread and
-        // sleeps, so it must be interrupted to wake (a plain `closed = true` is not enough
-        // for a thread parked in sleep) and joined, or it outlives the bridge holding the
-        // direct read buffer and the shared USB connection.
-        writeWatchdogThread?.let { thread ->
-            thread.interrupt()
-            try {
-                thread.join(WATCHDOG_POLL_MILLIS + 250L)
-            } catch (_: InterruptedException) {
-                Thread.currentThread().interrupt()
-            }
-        }
+        // Both watchdogs poll `closed` on their own thread and park in sleep, so a plain
+        // `closed = true` does not wake them: without interrupt/join they outlive the bridge
+        // holding `writeLock` and the shared USB connection. Interrupt both first, then join —
+        // joining one watchdog at a time doubles the worst-case teardown wait for no reason.
+        val writeWatchdog = writeWatchdogThread
+        val stallWatchdog = stallWatchdogThread
         writeWatchdogThread = null
-        // The stall watchdog parks in sleep the same way; left alone it would outlive the
-        // bridge holding `writeLock` and the shared connection, which is the same leak the
-        // write watchdog was just given interrupt/join for.
-        stallWatchdogThread?.let { thread ->
-            thread.interrupt()
+        stallWatchdogThread = null
+        writeWatchdog?.interrupt()
+        stallWatchdog?.interrupt()
+        for (watchdog in listOfNotNull(writeWatchdog, stallWatchdog)) {
             try {
-                thread.join(WATCHDOG_POLL_MILLIS + 250L)
+                watchdog.join(WATCHDOG_POLL_MILLIS + 250L)
             } catch (_: InterruptedException) {
                 Thread.currentThread().interrupt()
             }
         }
-        stallWatchdogThread = null
         if (!isAbortedOrDetached) synchronized(readLock) {
             synchronized(writeLock) {
                 if (!isAbortedOrDetached) {

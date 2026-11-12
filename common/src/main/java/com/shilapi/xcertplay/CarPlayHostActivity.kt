@@ -1838,10 +1838,13 @@ class CarPlayHostActivity : ComponentActivity() {
         val view = videoView ?: return
         val split = isMultiWindowActive()
         val portrait = if (split) screenPortrait() else view.height > view.width
-        val target = if (show) areas.sidePanel(portrait) else areas.indexFor(view.width, view.height, split, portrait)
-        val sent = target != null && controller?.showViewArea(target) == true
-        appendLog("Side panel ${if (show) "shown" else "hidden"}: view area $target sent=$sent")
-        if (!sent || target == null) return
+        val candidate = if (show) areas.sidePanel(portrait) else areas.indexFor(view.width, view.height, split, portrait)
+        val sent = candidate != null && controller?.showViewArea(candidate) == true
+        appendLog("Side panel ${if (show) "shown" else "hidden"}: view area $candidate sent=$sent")
+        // `sent` already implies a non-null candidate; the null check stays only to pin the
+        // non-null type for the calls below (a separate `candidate == null` test is dead).
+        val target = candidate ?: return
+        if (!sent) return
         areas.use(target)
         sidePanelShown = show
         sidePanel?.visibility = if (show) View.VISIBLE else View.GONE
@@ -5073,19 +5076,30 @@ class CarPlayHostActivity : ComponentActivity() {
      */
     private fun maybeRefrontForDockBar() {
         if (!dockBarRefrontEnabled) return
+        if (isFinishing || isDestroyed) return
         if (activeAirPlaySession == null || menuOpen || shuttingDown.get() ||
             handshakeResetInProgress || reverseCameraActive) return
         val now = SystemClock.elapsedRealtime()
         if (dockRefrontAttempts >= 3 || now - dockRefrontLastAttemptMs < 5_000L) return
         dockRefrontAttempts += 1
         dockRefrontLastAttemptMs = now
-        appendLog("Display: dock squeeze detected; bringing the app task to the front (attempt $dockRefrontAttempts)")
-        runCatching {
-            startActivity(
-                Intent(this, DiPlayActivity::class.java)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-            )
-        }.onFailure { appendLog("Display: task re-front failed: ${it.message}") }
+        val attempt = dockRefrontAttempts
+        // This is called from a layout pass; starting an activity there re-enters the window
+        // manager while the view tree is being measured. Post it to the next main-loop turn.
+        mainHandler.post {
+            if (isFinishing || isDestroyed) return@post
+            appendLog("Display: dock squeeze detected; bringing the app task to the front (attempt $attempt)")
+            runCatching {
+                startActivity(
+                    Intent(this, DiPlayActivity::class.java)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        // The launcher activity hands the front straight back to this screen
+                        // instead of painting the home page, which would cover the projection
+                        // (and would stay covered when the user last sat on a settings page).
+                        .putExtra(DiPlayActivity.EXTRA_DOCK_REFRONT, true),
+                )
+            }.onFailure { appendLog("Display: task re-front failed: ${it.message}") }
+        }
     }
 
     private fun isDockSqueezedShrink(bounds: CarPlaySurfaceBounds, viewWidth: Int, viewHeight: Int): Boolean {
