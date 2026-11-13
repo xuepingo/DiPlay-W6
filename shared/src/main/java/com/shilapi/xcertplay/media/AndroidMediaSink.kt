@@ -834,7 +834,7 @@ class AndroidMediaSink(
     val videoPacingEnabled: Boolean get() = videoPacingDelayMillis > 0
 
     /** Requests a keyframe for stream [type], e.g. after its surface came back. */
-    fun refreshPicture(type: Int) {
+    override fun refreshPicture(type: Int) {
         videoDecoders[type]?.refreshPicture()
     }
 

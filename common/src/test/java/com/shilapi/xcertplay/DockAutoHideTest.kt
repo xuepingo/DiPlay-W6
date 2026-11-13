@@ -70,10 +70,14 @@ class DockAutoHideTest {
         val autoHideLayout = contentRectMethod.invoke(activity, 1024, 600) as CarPlayVideoLayout
         val expectedWidth = 1024f / (1f - 0.13f)
         val expectedLeft = -expectedWidth * 0.13f
+        // The hidden-dock magnification scales both axes (keeps the canvas aspect) and
+        // recentres vertically, instead of stretching only the width.
+        val expectedHeight = 600f * (expectedWidth / 1024f)
+        val expectedTop = (600f - expectedHeight) / 2f
         assertEquals(expectedLeft, autoHideLayout.left, 0.05f)
-        assertEquals(0f, autoHideLayout.top, 0.01f)
+        assertEquals(expectedTop, autoHideLayout.top, 0.05f)
         assertEquals(expectedWidth, autoHideLayout.width, 0.05f)
-        assertEquals(600f, autoHideLayout.height, 0.01f)
+        assertEquals(expectedHeight, autoHideLayout.height, 0.05f)
 
         // Verify touch coordinate mapping across screen edges:
         val leftEdgeNormX = (0f - autoHideLayout.left) / autoHideLayout.width

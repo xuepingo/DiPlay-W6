@@ -5022,10 +5022,19 @@ class CarPlayHostActivity : ComponentActivity() {
             val dockRatio = 0.13f
             val appRatio = 1f - dockRatio
             if (base.width > 0f && appRatio > 0f) {
+                // Magnify the app area until it fills the window width, sliding the dock
+                // strip off the edge. Scale BOTH axes and re-centre vertically: scaling
+                // only the width (the earlier form) drew the canvas into a wider rect
+                // and stretched every circle into an ellipse (~15 % on a 1:1 window),
+                // which read as a distorted, slightly blurry picture until the next
+                // dock reveal recomputed a normal fit. Uniform scaling keeps the
+                // canvas aspect and crops a sliver off the top and bottom instead.
                 val scale = viewWidth.toFloat() / (base.width * appRatio)
                 val newWidth = base.width * scale
+                val newHeight = base.height * scale
                 val newLeft = if (rightHandDrive) 0f else -newWidth * dockRatio
-                return CarPlayVideoLayout(newLeft, base.top, newWidth, base.height)
+                val newTop = base.top - (newHeight - base.height) / 2f
+                return CarPlayVideoLayout(newLeft, newTop, newWidth, newHeight)
             }
         }
         return base

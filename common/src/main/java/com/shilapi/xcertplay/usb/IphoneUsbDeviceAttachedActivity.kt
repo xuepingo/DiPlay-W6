@@ -7,6 +7,7 @@ import android.hardware.usb.UsbManager
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
+import com.shilapi.xcertplay.AirPlayPersistence
 import com.shilapi.xcertplay.CarPlayHostActivity
 
 /**
@@ -29,6 +30,13 @@ class IphoneUsbDeviceAttachedActivity : Activity() {
                 intent.getParcelableExtra(UsbManager.EXTRA_DEVICE) as? UsbDevice
             }
             Log.i(TAG, "iPhone USB attached: device=$device")
+            // An attach event means the phone is on the wire: run the session as wired.
+            // On a first run there is no saved preference and loadWirelessEnabled defaults
+            // to wireless, so the auto-opened host walked the wireless discovery path and
+            // sat waiting for a phone that was plugged into USB. The manual "USB connect"
+            // button saves wired before opening the host; this makes the plug-in path
+            // agree with it, so the first connection no longer needs that detour.
+            AirPlayPersistence.saveWirelessEnabled(this, false)
             startActivity(
                 Intent(this, CarPlayHostActivity::class.java)
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT),

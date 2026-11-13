@@ -30,6 +30,8 @@ interface MediaSink {
     fun onVideoFrameDropped(type: Int) {}
     fun setVideoRecoveryHandler(type: Int, handler: () -> Unit) {}
     fun setVideoDiagnosticHandler(type: Int, handler: (String) -> Unit) {}
+    /** Ask the iPhone for a keyframe of stream [type], e.g. to replace a cold-start picture. */
+    fun refreshPicture(type: Int) {}
     fun onScreenStreamActive(type: Int, active: Boolean) {}
     fun onAudioStarted(id: AudioStreamId, format: AudioFormat, firstSample: Int) {}
     fun onAudioRtp(id: AudioStreamId, format: AudioFormat, rtp: ByteArray, sample: Int) {}
@@ -161,8 +163,27 @@ class CarPlayMediaEngine(
         val streamKey = StreamKey(session, type)
         Log.i(TAG, "airplay screen key connectionID=${unsignedPlistDecimal(stream["streamConnectionID"])}")
         val screen = ScreenStream(key, session::logDebug, session.localAddress)
+        val qualityRefreshScheduled = java.util.concurrent.atomic.AtomicBoolean(false)
         sink.setVideoDiagnosticHandler(type) {
-            if (it == "first frame rendered") session.videoFrameRendered()
+            if (it == "first frame rendered") {
+                session.videoFrameRendered()
+                // The iPhone's cold-start keyframe of a still screen (the dashboard after
+                // connecting) is softer than the frames its encoder produces once running,
+                // and a static picture keeps that soft frame on screen until motion forces
+                // a fresh one — which is why a swipe seemed to "fix" the blur. Ask for one
+                // more keyframe once the encoder has settled, so the first shown picture is
+                // replaced by a steady-state-quality frame without the driver touching the
+                // screen. One request per stream generation; harmless when the picture is
+                // already sharp.
+                if (qualityRefreshScheduled.compareAndSet(false, true)) {
+                    screenReapScheduler.schedule({
+                        if (!session.isClosed && (streams[streamKey] === screen || streams[streamKey] == null)) {
+                            sink.refreshPicture(type)
+                            session.logDebug("Video: steady-state quality keyframe requested after first frame")
+                        }
+                    }, QUALITY_REFRESH_DELAY_MS, TimeUnit.MILLISECONDS)
+                }
+            }
             session.logDebug("Video: $it")
         }
         sink.setVideoRecoveryHandler(type) {
@@ -745,6 +766,8 @@ class CarPlayMediaEngine(
          * every hiccup into a full reconnect. See issue #106.
          */
         const val SCREEN_REAP_GRACE_MILLIS = 5_000L
+        /** How long after the first frame the steady-state quality keyframe is requested. */
+        const val QUALITY_REFRESH_DELAY_MS = 1_500L
         const val STREAM_TYPE_MAIN_AUDIO = 100
         const val STREAM_TYPE_DATA = 130
         const val DATASTREAM_OUTPUT_KEY = "DataStream-Output-Encryption-Key"
