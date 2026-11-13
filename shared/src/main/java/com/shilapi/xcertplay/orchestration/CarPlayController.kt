@@ -2833,7 +2833,9 @@ class CarPlayController(
     private fun beginReenumeration(device: UsbDevice) {
         phase = Phase.REENUMERATION
         reenumerationAttempts += 1
-        reenumeratedThisAttach = true
+        // Issue #368: reenumeratedThisAttach is set when a vendor transition is actually
+        // issued (see requestVendorReenumeration), not here — the probe below must still be
+        // able to see "nothing has bounced this attach yet" and run the forced pass.
         val generation = availabilityPollGeneration.incrementAndGet()
         onStatus(CarPlayStatus.SelectingConfiguration)
 
@@ -2859,13 +2861,19 @@ class CarPlayController(
                             if (configuration != null && !forcedReenumerationForAttach) {
                                 connectionDiagnostic("CarPlay configuration ready from fast probe; skipping vendor request")
                                 useIphoneConfiguration(device, configuration)
-                            } else if (forcedReenumerationForAttach) {
+                            } else if (forcedReenumerationForAttach && !reenumeratedThisAttach) {
                                 // Issue #335: the #275 forced re-enumeration was defeated
                                 // here — the fast probe found the stale configuration and
                                 // skipped the vendor request, so the phone never saw the
                                 // 0x51 transition and the reconnect reused the dead state.
                                 // A forced pass must issue the vendor request even when a
                                 // configuration is already visible.
+                                // Issue #368: but only once per attach. After the vendor
+                                // transition this very pass issued, the following attach is
+                                // the re-enumeration result — forcing again stacked a second
+                                // transition on it, and runTransition's openDevice hit a stale
+                                // UsbDevice ("UsbManager could not open the iPhone") and failed
+                                // the whole attempt.
                                 connectionDiagnostic("Forced re-enumeration active; requesting vendor re-enumeration despite fast-probe configuration (issue #275)")
                                 requestVendorReenumerationWithLegacySettle(device, generation)
                             } else if (System.nanoTime() < deadlineNanos) {
@@ -2943,6 +2951,8 @@ class CarPlayController(
             mainHandler.post {
                 if (closed || phase != Phase.REENUMERATION || generation != availabilityPollGeneration.get()) return@post
                 if (errno == 0) {
+                    // Issue #368: USBDEVFS_RESET is a real bounce — same latch as the vendor path.
+                    reenumeratedThisAttach = true
                     onStatus(CarPlayStatus.WaitingForReenumeration)
                     pollReenumeration(device)
                 } else {
@@ -2977,6 +2987,9 @@ class CarPlayController(
             when (transition) {
                 IphoneUsbHost.TransitionResult.ReenumerationRequested -> {
                     if (closed || phase != Phase.REENUMERATION || generation != availabilityPollGeneration.get()) return@requestCarPlayReenumerationAsync
+                    // Issue #368: a real bounce is now in flight for this attach. The attach
+                    // it produces must be accepted, not bounced again by the forced pass.
+                    reenumeratedThisAttach = true
                     onStatus(CarPlayStatus.WaitingForReenumeration)
                     pollReenumeration(device)
                 }
