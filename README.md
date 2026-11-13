@@ -10,7 +10,7 @@
 
 | | |
 |---|---|
-| 当前版本 | **稳定版 36**（基于上游 v0.3.15，`versionCode 135`） |
+| 当前版本 | **稳定版 37**（基于上游 v0.3.15，`versionCode 135`） |
 | 下载 | [Releases](../../releases/latest) |
 | 包名 | `com.shihab.diplay` |
 | APK SHA256 | `a9180916118b473826a0b66f6f8221797588db0dc84b78c0ee79cde0019508da` |
@@ -422,6 +422,7 @@ runtime-assets/offline-mfi/
 
 | 版本 | 基线 | 要点 |
 |---|---|---|
+| 稳定版 37 | v0.3.15 | 修强制重枚举在同一 attach 上叠加第二次请求：`reenumeratedThisAttach` 闩只加在 `shouldForceReenumerationBeforeReuse`，probe 的强制分支漏了它，导致 `UsbManager could not open the iPhone`（attempt 5/6 失败、空等 2-4 秒）。置位改到真正发出 bounce 处 |
 | 稳定版 36 | v0.3.15 | 35 的自查修正：**Dock 重排改为静默请求**（原来会把主界面盖在投影上，且停在设置页时回不来）、**停滞看门狗补入站活跃条件**（否则空闲会话会被误判为数据面卡死而踢掉）、看门狗线程回收改并行 join |
 | 稳定版 35 | v0.3.15 | 移植上游 v0.3.16 的 5 项：**Dock 置顶改用 launcher + NEW_TASK**（原实现是 no-op）、挤压守卫改用基线尺寸、bulk-out 停滞看门狗、NCM 每帧日志改采样、阶段与倒车 age 改单调时钟、诊断补开关状态 |
 | 稳定版 34 | v0.3.15 | Activity 重建后首连强制 USB 重枚举，消除 4 秒超时 |
